@@ -1,0 +1,39 @@
+[Unit]
+Description=UGC Ad Maker - AI Video Ad Generator
+Documentation=https://github.com/your-repo/ugc-ad-maker-python
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=administrator
+Group=administrator
+WorkingDirectory=/nvme0n1-disk/nvme01/ugc-ad-maker-python
+
+# Load environment variables from .env file
+EnvironmentFile=/nvme0n1-disk/nvme01/ugc-ad-maker-python/.env
+
+# Use pyenv Python 3.11
+ExecStart=/home/administrator/.pyenv/versions/3.11.0/bin/python \
+    -m uvicorn main:app \
+    --host 0.0.0.0 \
+    --port 8765 \
+    --workers 1
+
+# Restart policy
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ugc-ad-maker
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

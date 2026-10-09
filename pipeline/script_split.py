@@ -1,0 +1,265 @@
+"""
+pipeline/script_split.py
+─────────────────────────
+Parse scripts with arbitrary scenes:
+  - Standard UGC 3-segment ([HOOK], [BODY], [CTA])
+  - Multi-scene scripts (SCENE 1, SCENE 2, ... SCENE 5)
+  - Numbered scenes (1}, 2}, 3} or [SCENE 1])
+  - Combined with optional [SCENE_...] director notes
+
+Maps each segment to:
+  - spoken text (for VoxCPM TTS and SRT captions)
+  - VoxCPM emotion key
+  - structured scene direction dictionary
+  - synthesized scene_prompt for video generation models
+"""
+from __future__ import annotations
+
+import re
+from typing import TypedDict, Optional
+
+
+class Segment(TypedDict, total=False):
+    label: str               # "hook" | "body" | "cta" | "scene_1" ...
+    text: str                # spoken dialogue only (for TTS & captions)
+    emotion: str             # VoxCPM emotion key
+    scene_prompt: str        # combined visual scene prompt for video models
+    scene_direction: dict    # detailed breakdown (characters, background, camera, movement, sound)
+
+
+def _parse_scene_block(scene_text: str) -> dict:
+    """Parse key: value lines from a [SCENE_...] block."""
+    direction = {
+        "characters": "",
+        "scene_background": "",
+        "camera_movement": "",
+        "movement_in_scene": "",
+        "sound_design": "",
+    }
+    current_key = None
+    for line in scene_text.splitlines():
+        line_s = line.strip()
+        if not line_s:
+            continue
+        lower_line = line_s.lower()
+        if lower_line.startswith("characters:"):
+            current_key = "characters"
+            direction[current_key] = line_s.split(":", 1)[1].strip()
+        elif lower_line.startswith("scene background:") or lower_line.startswith("background:"):
+            current_key = "scene_background"
+            direction[current_key] = line_s.split(":", 1)[1].strip()
+        elif lower_line.startswith("camera movement:") or lower_line.startswith("camera:"):
+            current_key = "camera_movement"
+            direction[current_key] = line_s.split(":", 1)[1].strip()
+        elif lower_line.startswith("movement in scene:") or lower_line.startswith("movement:"):
+            current_key = "movement_in_scene"
+            direction[current_key] = line_s.split(":", 1)[1].strip()
+        elif lower_line.startswith("sound design:") or lower_line.startswith("sound:"):
+            current_key = "sound_design"
+            direction[current_key] = line_s.split(":", 1)[1].strip()
+        elif current_key:
+            direction[current_key] += " " + line_s
+
+    return direction
+
+
+def parse_segments(script: str) -> list[Segment]:
+    """
+    Parse a script into an ordered list of Segment objects.
+    Supports:
+      - 3-segment [HOOK], [BODY], [CTA]
+      - Multi-scene SCENE 1, SCENE 2, ... SCENE 5 (with optional timestamps like — 0-8 SEC)
+      - Numbered scenes (1}, 2}, 3})
+    """
+    clean_script = script.strip()
+    if not clean_script:
+        return []
+
+    # 0. Check for multi-ad document containing numbered variations (e.g. 1} SCENE 1 ..., 2} SCENE 1 ...)
+    variation_pattern = re.compile(
+        r'(?:\n|^)\s*(?=\d+[\]\}\)]\s*SCENE\s*1\b|\bAD\s*\d+\b|\bVARIATION\s*\d+\b)',
+        re.IGNORECASE
+    )
+    parts = [p.strip() for p in variation_pattern.split(clean_script) if p.strip()]
+    if len(parts) > 1:
+        print(f"[SCRIPT_SPLIT] Multiple ad variations detected ({len(parts)} ads). Processing Variation 1 (Scenes 1-5).", flush=True)
+        clean_script = parts[0]
+
+    # 1. Check for SCENE 1..N or [SCENE 1..N]
+    scene_pattern = re.compile(
+        r'(?:^|\n)\s*(?:\[?\s*SCENE\s*(\d+)[^\n\]]*\]?|(\d+)\}\s*SCENE\s*(\d+)[^\n\]]*|\bSCENE\s*(\d+)\b)',
+        re.IGNORECASE
+    )
+    scene_matches = list(scene_pattern.finditer(clean_script))
+
+    if len(scene_matches) >= 2:
+        return _parse_numbered_scenes(clean_script, scene_matches)
+
+    # 2. Check for [HOOK], [BODY], [CTA]
+    hook_body_cta_pattern = re.compile(r'\[(HOOK|BODY|CTA)\]', re.IGNORECASE)
+    hbc_matches = list(hook_body_cta_pattern.finditer(clean_script))
+    if hbc_matches:
+        return _parse_hook_body_cta(clean_script)
+
+    # 3. Fallback: single segment
+    return [{
+        "label": "body",
+        "text": clean_script,
+        "emotion": "encourage",
+        "scene_prompt": clean_script,
+        "scene_direction": {},
+    }]
+
+
+def _parse_numbered_scenes(script: str, matches: list[re.Match]) -> list[Segment]:
+    """Parse SCENE 1 ... SCENE N format."""
+    segments: list[Segment] = []
+    total_scenes = len(matches)
+
+    for i, m in enumerate(matches):
+        start = m.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(script)
+        scene_raw = script[start:end].strip()
+
+        # Clean timestamps or labels like "— 0–8 SEC", quotes, etc.
+        lines = []
+        scene_dir_text = ""
+        in_scene_dir = False
+
+        for line in scene_raw.splitlines():
+            line_s = line.strip()
+            if not line_s:
+                continue
+            if re.match(r'^\[SCENE_.*\]', line_s, re.IGNORECASE):
+                in_scene_dir = True
+                continue
+            if in_scene_dir:
+                scene_dir_text += line_s + "\n"
+            else:
+                # Remove header timestamp fragments if they leaked
+                cleaned_line = re.sub(r'^[—–-]\s*\d+[\s–-]+\d+\s*sec\b', '', line_s, flags=re.IGNORECASE).strip()
+                if cleaned_line:
+                    lines.append(cleaned_line)
+
+        spoken_text = " ".join(lines).replace('“', '"').replace('”', '"').strip()
+        if not spoken_text:
+            continue
+
+        scene_idx = i + 1
+        label = f"scene_{scene_idx}"
+        if scene_idx == 1:
+            label = "hook"
+            emotion = "hook"
+        elif scene_idx == total_scenes:
+            label = "cta"
+            emotion = "excited"
+        else:
+            emotion = "explain" if scene_idx == 2 else "encourage"
+
+        scene_dir = _parse_scene_block(scene_dir_text) if scene_dir_text else {}
+        
+        # Build prompt
+        if scene_dir.get("characters") or scene_dir.get("movement_in_scene"):
+            components = []
+            if scene_dir.get("characters"): components.append(scene_dir["characters"])
+            if scene_dir.get("scene_background"): components.append(f"in {scene_dir['scene_background']}")
+            if scene_dir.get("movement_in_scene"): components.append(scene_dir["movement_in_scene"])
+            if scene_dir.get("camera_movement"): components.append(f"camera {scene_dir['camera_movement']}")
+            scene_prompt = ". ".join(components)
+        else:
+            scene_prompt = f"UGC creator speaking directly to camera for {label}: {spoken_text}"
+
+        segments.append({
+            "label": label,
+            "text": spoken_text,
+            "emotion": emotion,
+            "scene_prompt": scene_prompt,
+            "scene_direction": scene_dir,
+        })
+
+    return segments
+
+
+def _parse_hook_body_cta(script: str) -> list[Segment]:
+    """Parse traditional [HOOK], [BODY], [CTA] tags."""
+    labels = ["hook", "body", "cta"]
+    emotions = {"hook": "hook", "body": "encourage", "cta": "excited"}
+    segments: list[Segment] = []
+
+    for label in labels:
+        spoken_tag = f"[{label}]"
+        scene_tag = f"[SCENE_{label}]"
+        
+        stop_tags = [scene_tag, "[HOOK]", "[BODY]", "[CTA]", "[SCENE_HOOK]", "[SCENE_BODY]", "[SCENE_CTA]"]
+        stop_tags = [t for t in stop_tags if t.upper() != spoken_tag.upper()]
+        
+        idx = script.upper().find(spoken_tag.upper())
+        if idx == -1:
+            continue
+        start_pos = idx + len(spoken_tag)
+        rem = script[start_pos:]
+        
+        earliest_stop = len(rem)
+        for tag in stop_tags:
+            p = rem.upper().find(tag.upper())
+            if p != -1 and p < earliest_stop:
+                earliest_stop = p
+        spoken_text = rem[:earliest_stop].strip()
+
+        # Extract scene tag if present
+        sidx = script.upper().find(scene_tag.upper())
+        scene_dir = {}
+        if sidx != -1:
+            s_rem = script[sidx + len(scene_tag):]
+            s_earliest = len(s_rem)
+            for tag in ["[HOOK]", "[BODY]", "[CTA]"]:
+                sp = s_rem.upper().find(tag.upper())
+                if sp != -1 and sp < s_earliest:
+                    s_earliest = sp
+            scene_dir = _parse_scene_block(s_rem[:s_earliest].strip())
+
+        if spoken_text:
+            components = []
+            if scene_dir.get("characters"): components.append(scene_dir["characters"])
+            if scene_dir.get("scene_background"): components.append(f"in {scene_dir['scene_background']}")
+            if scene_dir.get("movement_in_scene"): components.append(scene_dir["movement_in_scene"])
+            if scene_dir.get("camera_movement"): components.append(f"camera {scene_dir['camera_movement']}")
+            scene_prompt = ". ".join(components) if components else spoken_text
+
+            segments.append({
+                "label": label,
+                "text": spoken_text,
+                "emotion": emotions.get(label, "neutral"),
+                "scene_prompt": scene_prompt,
+                "scene_direction": scene_dir,
+            })
+
+    order = {"hook": 0, "body": 1, "cta": 2}
+    segments.sort(key=lambda s: order.get(s["label"], 99))
+    return segments
+
+
+def segments_to_full_script(segments: list[Segment]) -> str:
+    """Reconstruct full plain spoken script from segments."""
+    return " ".join(s["text"] for s in segments)
+
+
+def format_script_for_display(script: str) -> str:
+    """Format the raw script with its scene headers into clean display text."""
+    output = []
+    lines = script.splitlines()
+    for line in lines:
+        s = line.strip()
+        if re.match(r'^(?:\[?SCENE\s*(\d+).*|\bSCENE\s*(\d+)\b)', s, re.IGNORECASE):
+            output.append(f"\n🎬 {s}")
+        elif re.match(r'^\[HOOK\]$', s, re.IGNORECASE):
+            output.append("\n🎬 [HOOK]")
+        elif re.match(r'^\[BODY\]$', s, re.IGNORECASE):
+            output.append("\n💡 [BODY]")
+        elif re.match(r'^\[CTA\]$', s, re.IGNORECASE):
+            output.append("\n🚀 [CALL TO ACTION]")
+        elif re.match(r'^\[SCENE_(.*)\]$', s, re.IGNORECASE):
+            output.append("\n🎥 Director Visual Breakdown:")
+        elif s:
+            output.append(s)
+    return "\n".join(output).strip()

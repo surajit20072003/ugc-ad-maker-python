@@ -1,0 +1,27 @@
+# Secrets & Environment variables
+.env
+
+# Generated uploads & media
+uploads/*
+!uploads/.gitkeep
+
+# Python cache & virtual environments
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+
+# Runtime state & scratch test files
+state.json
+dummy.wav
+dummy_out.wav
+parsed.txt
+all_models.txt
+all_models_with_modalities.txt
+
+# System / IDE files
+.DS_Store
+.idea/
+.vscode/
