@@ -23,13 +23,18 @@ class Segment(TypedDict, total=False):
     label: str               # "hook" | "body" | "cta" | "scene_1" ...
     text: str                # spoken dialogue only (for TTS & captions)
     emotion: str             # VoxCPM emotion key
+    scene_type: str          # "avatar" | "b_roll"
+    kling_prompt: str        # tailored prompt for Kling AI B-Roll
     scene_prompt: str        # combined visual scene prompt for video models
-    scene_direction: dict    # detailed breakdown (characters, background, camera, movement, sound)
+    scene_direction: dict    # detailed breakdown (characters, background, camera, movement, sound, visual_type, kling_prompt)
+    audio_duration_sec: float# measured audio length in seconds
 
 
 def _parse_scene_block(scene_text: str) -> dict:
     """Parse key: value lines from a [SCENE_...] block."""
     direction = {
+        "visual_type": "",
+        "kling_prompt": "",
         "characters": "",
         "scene_background": "",
         "camera_movement": "",
@@ -42,7 +47,14 @@ def _parse_scene_block(scene_text: str) -> dict:
         if not line_s:
             continue
         lower_line = line_s.lower()
-        if lower_line.startswith("characters:"):
+        if lower_line.startswith("visual type:") or lower_line.startswith("type:"):
+            current_key = "visual_type"
+            val = line_s.split(":", 1)[1].strip().lower()
+            direction[current_key] = "b_roll" if "b_roll" in val or "broll" in val else "avatar"
+        elif lower_line.startswith("kling prompt:") or lower_line.startswith("kling:") or lower_line.startswith("b_roll prompt:"):
+            current_key = "kling_prompt"
+            direction[current_key] = line_s.split(":", 1)[1].strip()
+        elif lower_line.startswith("characters:"):
             current_key = "characters"
             direction[current_key] = line_s.split(":", 1)[1].strip()
         elif lower_line.startswith("scene background:") or lower_line.startswith("background:"):
@@ -158,6 +170,20 @@ def _parse_numbered_scenes(script: str, matches: list[re.Match]) -> list[Segment
 
         scene_dir = _parse_scene_block(scene_dir_text) if scene_dir_text else {}
         
+        # Determine scene type: avatar vs b_roll
+        explicit_type = scene_dir.get("visual_type")
+        if explicit_type in ("avatar", "b_roll"):
+            scene_type = explicit_type
+        else:
+            # Default heuristic for hybrid: 1 is hook (avatar), last is cta (avatar), middle are b_roll
+            scene_type = "avatar" if (scene_idx == 1 or scene_idx == total_scenes) else "b_roll"
+
+        kling_prompt = scene_dir.get("kling_prompt", "")
+        if not kling_prompt and scene_type == "b_roll":
+            bg = scene_dir.get("scene_background", "modern aesthetic studio")
+            mov = scene_dir.get("movement_in_scene", "product demonstration")
+            kling_prompt = f"Cinematic b-roll macro shot: {mov} in {bg}, shallow depth of field, dramatic lighting, vertical 9:16 format, photorealistic 4k"
+
         # Build prompt
         if scene_dir.get("characters") or scene_dir.get("movement_in_scene"):
             components = []
@@ -173,8 +199,11 @@ def _parse_numbered_scenes(script: str, matches: list[re.Match]) -> list[Segment
             "label": label,
             "text": spoken_text,
             "emotion": emotion,
+            "scene_type": scene_type,
+            "kling_prompt": kling_prompt,
             "scene_prompt": scene_prompt,
             "scene_direction": scene_dir,
+            "audio_duration_sec": 0.0,
         })
 
     return segments
@@ -219,6 +248,18 @@ def _parse_hook_body_cta(script: str) -> list[Segment]:
             scene_dir = _parse_scene_block(s_rem[:s_earliest].strip())
 
         if spoken_text:
+            explicit_type = scene_dir.get("visual_type")
+            if explicit_type in ("avatar", "b_roll"):
+                scene_type = explicit_type
+            else:
+                scene_type = "avatar" if label in ("hook", "cta") else "b_roll"
+
+            kling_prompt = scene_dir.get("kling_prompt", "")
+            if not kling_prompt and scene_type == "b_roll":
+                bg = scene_dir.get("scene_background", "clean aesthetic studio")
+                mov = scene_dir.get("movement_in_scene", "product demonstration")
+                kling_prompt = f"Cinematic close-up product b-roll: {mov} in {bg}, realistic lighting, slow smooth camera glide, 9:16 vertical video, 4k"
+
             components = []
             if scene_dir.get("characters"): components.append(scene_dir["characters"])
             if scene_dir.get("scene_background"): components.append(f"in {scene_dir['scene_background']}")
@@ -230,8 +271,11 @@ def _parse_hook_body_cta(script: str) -> list[Segment]:
                 "label": label,
                 "text": spoken_text,
                 "emotion": emotions.get(label, "neutral"),
+                "scene_type": scene_type,
+                "kling_prompt": kling_prompt,
                 "scene_prompt": scene_prompt,
                 "scene_direction": scene_dir,
+                "audio_duration_sec": 0.0,
             })
 
     order = {"hook": 0, "body": 1, "cta": 2}
@@ -253,11 +297,11 @@ def format_script_for_display(script: str) -> str:
         if re.match(r'^(?:\[?SCENE\s*(\d+).*|\bSCENE\s*(\d+)\b)', s, re.IGNORECASE):
             output.append(f"\n🎬 {s}")
         elif re.match(r'^\[HOOK\]$', s, re.IGNORECASE):
-            output.append("\n🎬 [HOOK]")
+            output.append("\n🎬 [HOOK] (👤 Creator Avatar)")
         elif re.match(r'^\[BODY\]$', s, re.IGNORECASE):
-            output.append("\n💡 [BODY]")
+            output.append("\n🎥 [BODY] (🎬 Kling Cinematic B-Roll)")
         elif re.match(r'^\[CTA\]$', s, re.IGNORECASE):
-            output.append("\n🚀 [CALL TO ACTION]")
+            output.append("\n🚀 [CALL TO ACTION] (👤 Creator Avatar)")
         elif re.match(r'^\[SCENE_(.*)\]$', s, re.IGNORECASE):
             output.append("\n🎥 Director Visual Breakdown:")
         elif s:

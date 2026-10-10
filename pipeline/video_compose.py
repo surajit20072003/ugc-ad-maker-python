@@ -284,12 +284,16 @@ async def compose_final_video(
     clip_urls: list[str],
     segments: list[dict],
     job_id: str,
-    burn_captions: bool = True,
+    burn_captions: bool = False,
     audio_urls: Optional[list[str]] = None,
+    brand_color: Optional[tuple[int, int, int]] = None,
 ) -> str:
     """
-    Download clips, stitch them together, optionally burn captions.
+    Download clips, stitch them together into cinematic hybrid video,
+    apply glassmorphism keyword icon cards, and normalize audio.
     """
+    from pipeline.icon_overlay import plan_segment_icon_overlays, build_ffmpeg_icon_filter
+
     UPLOAD_DIR.mkdir(exist_ok=True)
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -324,13 +328,48 @@ async def compose_final_video(
             )
             encoded_paths.append(enc)
 
-        # 3. Concatenate
+        # 3. Concatenate scenes in order (hook -> body -> cta)
         concat_out = tmp_path / "concat.mp4"
         await asyncio.get_event_loop().run_in_executor(
             None, _concat_clips, encoded_paths, concat_out
         )
 
-        # 4. Burn subtitles if requested
+        current_video = concat_out
+
+        # 4. Apply Glassmorphism Keyword Icon Cards
+        if segments:
+            # Measure actual durations of concatenated parts
+            durations = [_get_duration(p) for p in encoded_paths]
+            for idx, dur in enumerate(durations):
+                if idx < len(segments):
+                    segments[idx]["audio_duration_sec"] = dur
+
+            icon_overlays = plan_segment_icon_overlays(
+                segments, tmp_path / "icons", brand_color=brand_color
+            )
+
+            if icon_overlays:
+                extra_inputs, filter_str = build_ffmpeg_icon_filter(
+                    icon_overlays, input_video_tag="[0:v]", output_tag="[v_out]"
+                )
+                icon_out = tmp_path / "with_icons.mp4"
+                cmd = [
+                    "ffmpeg", "-y",
+                    "-i", str(current_video),
+                    *extra_inputs,
+                    "-filter_complex", filter_str,
+                    "-map", "[v_out]",
+                    "-map", "0:a?",
+                    "-c:v", "libx264", "-crf", "18", "-preset", "veryfast",
+                    "-c:a", "copy",
+                    "-movflags", "+faststart",
+                    str(icon_out),
+                ]
+                res = subprocess.run(cmd, capture_output=True, text=True)
+                if res.returncode == 0:
+                    current_video = icon_out
+
+        # 5. Optional subtitles (legacy fallback, default False)
         if burn_captions and segments:
             durations = [_get_duration(p) for p in encoded_paths]
             srt_content = _build_srt(segments, durations)
@@ -340,18 +379,16 @@ async def compose_final_video(
             captioned_out = tmp_path / "captioned.mp4"
             try:
                 await asyncio.get_event_loop().run_in_executor(
-                    None, _burn_captions, concat_out, srt_path, captioned_out
+                    None, _burn_captions, current_video, srt_path, captioned_out
                 )
-                final_tmp = captioned_out
+                current_video = captioned_out
             except RuntimeError:
-                final_tmp = concat_out
-        else:
-            final_tmp = concat_out
+                pass
 
-        # 5. Save to uploads/
+        # 6. Save final video to uploads/
         final_name = f"final_{job_id}.mp4"
         final_path = UPLOAD_DIR / final_name
-        final_path.write_bytes(final_tmp.read_bytes())
+        final_path.write_bytes(current_video.read_bytes())
 
     return f"{SERVER_URL}/uploads/{final_name}"
 
@@ -360,8 +397,9 @@ async def save_single_clip(
     clip_url: str,
     segments: list[dict],
     job_id: str,
-    burn_captions: bool = True,
+    burn_captions: bool = False,
     audio_urls: Optional[list[str]] = None,
+    brand_color: Optional[tuple[int, int, int]] = None,
 ) -> str:
     return await compose_final_video(
         clip_urls=[clip_url],
@@ -369,4 +407,5 @@ async def save_single_clip(
         job_id=job_id,
         burn_captions=burn_captions,
         audio_urls=audio_urls,
+        brand_color=brand_color,
     )

@@ -40,13 +40,15 @@ from fastapi.templating import Jinja2Templates
 from dotenv import load_dotenv
 
 from pipeline.analyze import analyze_physical_product, analyze_software_product
-from pipeline.audio_proc import process_reference_audio
+from pipeline.audio_proc import process_reference_audio, get_audio_duration_bytes
 from pipeline.image_gen import generate_ugc_prompt, generate_ugc_image
 from pipeline.script_gen import generate_script
 from pipeline.script_split import parse_segments, segments_to_full_script, format_script_for_display
 from pipeline.tts import generate_voiceover, list_emotions, check_health
 from pipeline.upload import upload_audio_wav, upload_image_bytes
 from pipeline.video_gen import generate_video
+from pipeline.broll_gen import generate_kling_broll
+from pipeline.scene_composer import compose_pure_broll_scene
 from pipeline.video_compose import compose_final_video, save_single_clip
 
 load_dotenv()
@@ -152,71 +154,29 @@ async def run_pipeline(
         job["segments"]       = segments
 
         # ────────────────────────────────────────────────────────────────────
-        # Step 3: Generate Consistent Avatar Images (One Per Segment)
+        # Step 3 (AUDIO-FIRST): Generate Voiceover per Segment (VoxCPM)
         # ────────────────────────────────────────────────────────────────────
-        segment_image_urls: list[str] = []
-
-        if avatar_url:
-            _emit(job_id, "image_gen", f"Using custom creator avatar for all {len(segments)} scenes...", 20)
-            segment_image_urls = [avatar_url] * len(segments)
-        else:
-            _emit(job_id, "image_gen",
-                  f"Generating {len(segments)} consistent creator scenes (waist-up + gestures)...", 18)
-
-            ref_image_url = product_image_url
-            if not ref_image_url and product_image_bytes:
-                _emit(job_id, "upload_product", "Uploading product reference...", 20)
-                ref_image_url = await upload_image_bytes(product_image_bytes, job_id)
-
-            # Generate prompts using consistent character anchor + director scene cues
-            prompt_tasks = [
-                generate_ugc_prompt(
-                    product_name, analysis,
-                    mode=product_mode,
-                    segment=seg["label"],
-                    scene_direction=seg.get("scene_direction"),
-                )
-                for seg in segments
-            ]
-            ugc_prompts = await asyncio.gather(*prompt_tasks)
-
-            # Generate images in parallel
-            _emit(job_id, "image_gen", "Rendering photorealistic creator poses...", 25)
-            image_tasks = [
-                generate_ugc_image(
-                    prompt,
-                    ref_image_url,
-                    model=ugc_image_model,
-                    job_id=f"{job_id}_{i}",
-                )
-                for i, prompt in enumerate(ugc_prompts)
-            ]
-            segment_image_urls = list(await asyncio.gather(*image_tasks))
-
-        job["ugc_image_url"] = segment_image_urls[0] if segment_image_urls else ""
-        job["segment_image_urls"] = segment_image_urls
-
-        # ────────────────────────────────────────────────────────────────────
-        # Step 4: Generate Voiceover per Segment (VoxCPM)
-        # ────────────────────────────────────────────────────────────────────
-        _emit(job_id, "tts", f"Generating voiceovers for {len(segments)} scenes (VoxCPM emotional speech)...", 30)
+        _emit(job_id, "tts", f"🎙️ [Audio-First] Generating emotional voiceovers for {len(segments)} scenes...", 20)
 
         async def _gen_single_tts(idx: int, seg: dict):
             label = seg.get("label", f"scene_{idx+1}")
             emotion = seg.get("emotion", "encourage")
-            _emit(job_id, "tts", f"🎙️ [Scene {idx+1}/{len(segments)}] VoxCPM generating voiceover (emotion: {emotion})...", 30 + int((idx / len(segments)) * 18))
+            stype = seg.get("scene_type", "avatar")
+            _emit(job_id, "tts", f"🎙️ [Scene {idx+1}/{len(segments)} - {stype.upper()}] Synthesizing speech...", 20 + int((idx / len(segments)) * 15))
             wav = await generate_voiceover(seg["text"], emotion=emotion, reference_audio=reference_audio_path)
-            _emit(job_id, "tts", f"✅ [Scene {idx+1}/{len(segments)}] Audio ready ({len(wav) // 1024} KB)", 30 + int(((idx + 1) / len(segments)) * 18))
+            dur = get_audio_duration_bytes(wav)
+            seg["audio_duration_sec"] = dur
+            _emit(job_id, "tts", f"✅ [Scene {idx+1}/{len(segments)}] Speech ready: {dur:.2f}s ({len(wav) // 1024} KB)", 20 + int(((idx + 1) / len(segments)) * 15))
             return wav
 
         tts_tasks = [_gen_single_tts(i, seg) for i, seg in enumerate(segments)]
         wav_bytes_list: list[bytes] = list(await asyncio.gather(*tts_tasks))
 
-        # ────────────────────────────────────────────────────────────────────
-        # Step 5: Upload Audio Files
-        # ────────────────────────────────────────────────────────────────────
-        _emit(job_id, "upload_audio", f"Saving {len(wav_bytes_list)} audio WAV files for video muxing...", 50)
+        total_audio_runtime = sum(s.get("audio_duration_sec", 0.0) for s in segments)
+        _emit(job_id, "tts", f"🎵 All voiceovers ready. Exact total ad duration: {total_audio_runtime:.2f}s", 38)
 
+        # Upload audio WAV files
+        _emit(job_id, "upload_audio", f"Saving {len(wav_bytes_list)} audio WAV files for video muxing...", 40)
         audio_upload_tasks = [
             upload_audio_wav(wav, f"{job_id}_{i}")
             for i, wav in enumerate(wav_bytes_list)
@@ -226,42 +186,135 @@ async def run_pipeline(
         job["audio_urls"] = audio_urls
 
         # ────────────────────────────────────────────────────────────────────
-        # Step 6: Generate Video Clips (WaveSpeed or OpenRouter)
+        # Step 4: Generate Avatar Images (ONLY for Avatar Scenes!)
         # ────────────────────────────────────────────────────────────────────
-        engine_label = f"OpenRouter ({openrouter_video_model})" if video_backend == "openrouter" else "WaveSpeed InfiniteTalk"
-        _emit(job_id, "video", f"Generating {len(segments)} video clips ({engine_label})...", 55)
+        avatar_scene_indices = [i for i, seg in enumerate(segments) if seg.get("scene_type") == "avatar"]
+        segment_image_urls: list[str] = [""] * len(segments)
 
-        async def _gen_single_video(idx: int, seg: dict):
+        ref_image_url = product_image_url
+        if not ref_image_url and product_image_bytes:
+            _emit(job_id, "upload_product", "Uploading product reference...", 43)
+            ref_image_url = await upload_image_bytes(product_image_bytes, job_id)
+
+        if avatar_url:
+            _emit(job_id, "image_gen", f"Using custom creator avatar for avatar scenes...", 45)
+            for i in avatar_scene_indices:
+                segment_image_urls[i] = avatar_url
+        elif avatar_scene_indices:
+            _emit(job_id, "image_gen",
+                  f"Rendering photorealistic creator poses for {len(avatar_scene_indices)} avatar scenes...", 45)
+
+            async def _gen_single_avatar_img(i: int):
+                seg = segments[i]
+                prompt = await generate_ugc_prompt(
+                    product_name, analysis,
+                    mode=product_mode,
+                    segment=seg["label"],
+                    scene_direction=seg.get("scene_direction"),
+                )
+                img_url = await generate_ugc_image(
+                    prompt,
+                    ref_image_url,
+                    model=ugc_image_model,
+                    job_id=f"{job_id}_{i}",
+                )
+                return i, img_url
+
+            img_tasks = [_gen_single_avatar_img(i) for i in avatar_scene_indices]
+            img_results = await asyncio.gather(*img_tasks)
+            for idx_val, img_val in img_results:
+                segment_image_urls[idx_val] = img_val
+
+        job["ugc_image_url"] = segment_image_urls[0] if segment_image_urls and segment_image_urls[0] else ""
+        job["segment_image_urls"] = segment_image_urls
+
+        # ────────────────────────────────────────────────────────────────────
+        # Step 5: Generate Hybrid Video Clips (WaveSpeed/HeyGen Avatar + Kling B-Roll)
+        # ────────────────────────────────────────────────────────────────────
+        _emit(job_id, "video", f"Generating {len(segments)} cinematic hybrid scenes...", 55)
+
+        async def _gen_single_hybrid_scene(idx: int, seg: dict):
             label = seg.get("label", f"scene_{idx+1}")
+            stype = seg.get("scene_type", "avatar")
+            dur = seg.get("audio_duration_sec", 5.0)
             pct_base = 55 + int((idx / len(segments)) * 32)
-            _emit(job_id, "video", f"🎬 Dispatching Scene {idx+1}/{len(segments)} ({label}) to {engine_label}...", pct_base)
 
             def _log_cb(msg: str):
-                _emit(job_id, "video", f"[Scene {idx+1}/{len(segments)}] {msg}", pct_base)
+                _emit(job_id, "video", f"[Scene {idx+1}/{len(segments)} {stype.upper()}] {msg}", pct_base)
 
-            clip = await generate_video(
-                image_url=segment_image_urls[idx],
-                audio_url=audio_urls[idx] if idx < len(audio_urls) else "",
-                script=seg["text"],
-                segment=seg["label"],
-                resolution="720p",
-                backend=video_backend,
-                openrouter_model=openrouter_video_model,
-                scene_prompt=seg.get("scene_prompt", ""),
-                on_log=_log_cb,
-            )
-            _emit(job_id, "video", f"✅ [Scene {idx+1}/{len(segments)}] Video clip successfully generated!", pct_base + int(32 / len(segments)))
-            return clip
+            if stype == "b_roll":
+                # Pure Cinematic B-Roll using Kwai Kling Video, precision-muxed with voiceover
+                _emit(job_id, "video", f"🎬 Dispatching Scene {idx+1} to Kling Video (target audio: {dur:.2f}s)...", pct_base)
+                kling_raw_url = await generate_kling_broll(
+                    prompt=seg.get("kling_prompt") or seg.get("scene_prompt", ""),
+                    target_duration_sec=dur,
+                    segment_label=label,
+                    on_log=_log_cb,
+                )
 
-        video_tasks = [_gen_single_video(i, seg) for i, seg in enumerate(segments)]
+                # Precision-mux Kling video with scene voiceover
+                # Download Kling video to temp and mux to exact duration
+                local_broll = UPLOAD_DIR / f"kling_raw_{job_id}_{idx}.mp4"
+                local_audio = UPLOAD_DIR / f"audio_{job_id}_{idx}.wav"
+                local_audio.write_bytes(wav_bytes_list[idx])
+
+                async with httpx.AsyncClient(timeout=120) as client:
+                    resp = await client.get(kling_raw_url)
+                    resp.raise_for_status()
+                    local_broll.write_bytes(resp.content)
+
+                muxed_filename = f"broll_muxed_{job_id}_{idx}.mp4"
+                muxed_path = UPLOAD_DIR / muxed_filename
+                compose_pure_broll_scene(
+                    video_path=local_broll,
+                    audio_path=local_audio,
+                    output_path=muxed_path,
+                    target_duration=dur,
+                )
+
+                server_base = os.getenv("SERVER_URL", "http://localhost:8765").rstrip("/")
+                final_scene_url = f"{server_base}/uploads/{muxed_filename}"
+                _emit(job_id, "video", f"✅ Scene {idx+1} Kling B-Roll synced perfectly with voice ({dur:.2f}s)", pct_base + int(32 / len(segments)))
+                return final_scene_url
+
+            else:
+                # Talking Head Avatar scene
+                _emit(job_id, "video", f"👤 Generating Creator Avatar for Scene {idx+1} ({label})...", pct_base)
+                avatar_img = segment_image_urls[idx] or avatar_url or ref_image_url
+                clip = await generate_video(
+                    image_url=avatar_img,
+                    audio_url=audio_urls[idx] if idx < len(audio_urls) else "",
+                    script=seg["text"],
+                    segment=seg["label"],
+                    resolution="720p",
+                    backend=video_backend,
+                    openrouter_model=openrouter_video_model,
+                    scene_prompt=seg.get("scene_prompt", ""),
+                    on_log=_log_cb,
+                )
+                _emit(job_id, "video", f"✅ Scene {idx+1} Avatar clip ready!", pct_base + int(32 / len(segments)))
+                return clip
+
+        video_tasks = [_gen_single_hybrid_scene(i, seg) for i, seg in enumerate(segments)]
         clip_urls: list[str] = list(await asyncio.gather(*video_tasks))
         job["clip_urls"] = clip_urls
 
         # ────────────────────────────────────────────────────────────────────
-        # Step 7: Compose Final Video (Concatenation + Subtitles)
+        # Step 6: Compose Final Video (Stitching + Glassmorphism Icon Cards)
         # ────────────────────────────────────────────────────────────────────
         _emit(job_id, "compose",
-              f"Stitching {len(clip_urls)} clips + burning dynamic UGC captions (ffmpeg)...", 90)
+              f"Stitching {len(clip_urls)} hybrid clips + rendering animated glassmorphism icon cards (ffmpeg)...", 90)
+
+        # Extract brand accent color from analysis if available
+        brand_color_tuple = None
+        color_scheme = analysis.get("color_scheme", [])
+        if color_scheme and isinstance(color_scheme, list):
+            hex_c = color_scheme[0].get("hex", "")
+            if hex_c and len(hex_c) == 7 and hex_c.startswith("#"):
+                try:
+                    brand_color_tuple = (int(hex_c[1:3], 16), int(hex_c[3:5], 16), int(hex_c[5:7], 16))
+                except ValueError:
+                    pass
 
         if len(clip_urls) == 1:
             video_url = await save_single_clip(
@@ -270,6 +323,7 @@ async def run_pipeline(
                 job_id=job_id,
                 burn_captions=burn_captions,
                 audio_urls=audio_urls,
+                brand_color=brand_color_tuple,
             )
         else:
             video_url = await compose_final_video(
@@ -278,6 +332,7 @@ async def run_pipeline(
                 job_id=job_id,
                 burn_captions=burn_captions,
                 audio_urls=audio_urls,
+                brand_color=brand_color_tuple,
             )
 
         job["video_url"] = video_url
@@ -334,9 +389,9 @@ async def generate(
     voice_emotion:          str            = Form("excited"),
     ugc_image_model:        str            = Form("google/gemini-2.5-flash-image"),
     avatar_url:             str            = Form(""),
-    burn_captions:          str            = Form("true"),
+    burn_captions:          str            = Form("false"),
     video_backend:          str            = Form("wavespeed"),
-    openrouter_video_model: str            = Form("google/veo-3.1-fast"),
+    openrouter_video_model: str            = Form("kwaivgi/kling-video-o1"),
     custom_script:          str            = Form(""),
     product_image_file:     Optional[UploadFile] = File(None),
     reference_audio_file:   Optional[UploadFile] = File(None),
@@ -361,7 +416,7 @@ async def generate(
             detail="Physical product mode requires a product image (URL or file upload).",
         )
 
-    do_captions = burn_captions.lower() not in ("false", "0", "no")
+    do_captions = burn_captions.lower() in ("true", "1", "yes")
 
     # Process reference audio if uploaded
     ref_audio_path_str = ""
