@@ -27,12 +27,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 import uuid
 from pathlib import Path
 from typing import Dict, Optional
 
 import aiofiles  # noqa: F401
+import httpx
 from fastapi import FastAPI, Form, File, UploadFile, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -40,8 +42,10 @@ from fastapi.templating import Jinja2Templates
 from dotenv import load_dotenv
 
 from pipeline.analyze import analyze_physical_product, analyze_software_product
-from pipeline.audio_proc import process_reference_audio, get_audio_duration_bytes
-from pipeline.image_gen import generate_ugc_prompt, generate_ugc_image
+from pipeline.audio_proc import process_reference_audio, get_audio_duration_bytes, normalize_wav_loudness
+from pipeline.image_gen import generate_ugc_prompt, generate_ugc_image, generate_broll_keyframe_prompts
+from pipeline.prompt_enhancer import enhance_broll_prompt, DEFAULT_LIGHTING_ANCHOR
+from pipeline.visual_sync_validator import validate_and_enforce_sync
 from pipeline.script_gen import generate_script
 from pipeline.script_split import parse_segments, segments_to_full_script, format_script_for_display
 from pipeline.tts import generate_voiceover, list_emotions, check_health
@@ -49,6 +53,7 @@ from pipeline.upload import upload_audio_wav, upload_image_bytes
 from pipeline.video_gen import generate_video
 from pipeline.broll_gen import generate_kling_broll
 from pipeline.scene_composer import compose_pure_broll_scene
+from pipeline.infographic_broll import build_infographic_scenes
 from pipeline.video_compose import compose_final_video, save_single_clip
 
 load_dotenv()
@@ -80,7 +85,8 @@ def _job(job_id: str) -> dict:
 def _emit(job_id: str, step: str, message: str, progress: int, **extra) -> None:
     if job_id in JOBS:
         timestamp = time.strftime("%H:%M:%S")
-        entry = {"step": step, "message": message, "progress": progress, "time": timestamp, **extra}
+        extra.pop("job_id", None)
+        entry = {"job_id": job_id, "step": step, "message": message, "progress": progress, "time": timestamp, **extra}
         JOBS[job_id]["steps"].append(entry)
         JOBS[job_id]["current_step"] = step
         JOBS[job_id]["progress"]     = progress
@@ -105,11 +111,25 @@ async def run_pipeline(
     openrouter_video_model: str = "heygen/heygen-video-1",
     custom_script: str = "",
     reference_audio_path: str = "",
+    tts_engine: str = "voxcpm",
+    broll_video_model: str = "bytedance/seedance-1-5-pro",
+    image_provider: str = "local",
+    local_image_model: str = "flux-dev",
+    video_provider: str = "local",
+    local_video_model: str = "ltx23_distilled_q6",
+    motion_style: str = "reel",
 ) -> None:
     job = JOBS[job_id]
     job["status"] = "running"
     job["video_backend"] = video_backend
     job["openrouter_video_model"] = openrouter_video_model
+    job["tts_engine"] = tts_engine
+    job["image_provider"] = image_provider
+    job["local_image_model"] = local_image_model
+    job["video_provider"] = video_provider
+    job["local_video_model"] = local_video_model
+    job["motion_style"] = motion_style
+
 
     try:
         # ────────────────────────────────────────────────────────────────────
@@ -154,23 +174,52 @@ async def run_pipeline(
         job["segments"]       = segments
 
         # ────────────────────────────────────────────────────────────────────
-        # Step 3 (AUDIO-FIRST): Generate Voiceover per Segment (VoxCPM)
+        # Step 3 (AUDIO-FIRST): Generate Voiceover per Segment (VoxCPM / ByteDance)
+        # Sequential execution + self-anchored voice cloning to lock voice identity.
         # ────────────────────────────────────────────────────────────────────
-        _emit(job_id, "tts", f"🎙️ [Audio-First] Generating emotional voiceovers for {len(segments)} scenes...", 20)
+        engine_label = "ByteDance Seed Audio" if tts_engine == "bytedance" else "VoxCPM"
+        _emit(job_id, "tts", f"🎙️ [Audio-First] Generating voiceovers ({engine_label}) for {len(segments)} scenes...", 20)
 
-        async def _gen_single_tts(idx: int, seg: dict):
+        async def _gen_single_tts(idx: int, seg: dict, ref_audio: str = ""):
             label = seg.get("label", f"scene_{idx+1}")
             emotion = seg.get("emotion", "encourage")
+            if ref_audio:
+                emotion = "neutral"  # style prefixes shift the cloned timbre between scenes
             stype = seg.get("scene_type", "avatar")
-            _emit(job_id, "tts", f"🎙️ [Scene {idx+1}/{len(segments)} - {stype.upper()}] Synthesizing speech...", 20 + int((idx / len(segments)) * 15))
-            wav = await generate_voiceover(seg["text"], emotion=emotion, reference_audio=reference_audio_path)
+            _emit(job_id, "tts", f"🎙️ [Scene {idx+1}/{len(segments)} - {stype.upper()}] Synthesizing speech ({engine_label})...", 20 + int((idx / len(segments)) * 15))
+            wav = await generate_voiceover(
+                seg["text"],
+                emotion=emotion,
+                reference_audio=ref_audio,
+                engine=tts_engine,
+            )
             dur = get_audio_duration_bytes(wav)
             seg["audio_duration_sec"] = dur
             _emit(job_id, "tts", f"✅ [Scene {idx+1}/{len(segments)}] Speech ready: {dur:.2f}s ({len(wav) // 1024} KB)", 20 + int(((idx + 1) / len(segments)) * 15))
             return wav
 
-        tts_tasks = [_gen_single_tts(i, seg) for i, seg in enumerate(segments)]
-        wav_bytes_list: list[bytes] = list(await asyncio.gather(*tts_tasks))
+        # Sequential TTS — generate scene 0 first, save its output as voice anchor,
+        # then pass it as reference_audio to all remaining segments to lock voice identity.
+        wav_bytes_list: list[bytes] = []
+        job_voice_anchor = reference_audio_path  # Start with user upload (if any)
+
+        for i, seg in enumerate(segments):
+            wav = await _gen_single_tts(i, seg, ref_audio=job_voice_anchor)
+            # Normalize to EBU R128 (-16 LUFS) to ensure equal perceived loudness
+            # across both WaveSpeed avatar lip-sync clips and ffmpeg b-roll clips
+            wav = normalize_wav_loudness(wav)
+            dur = get_audio_duration_bytes(wav)
+            seg["audio_duration_sec"] = dur
+            wav_bytes_list.append(wav)
+            # After first segment: self-anchor — save its WAV to pin the voice for the rest
+            if i == 0 and not job_voice_anchor:
+                try:
+                    anchor_path = UPLOAD_DIR / f"voice_anchor_{job_id}.wav"
+                    anchor_path.write_bytes(wav)
+                    job_voice_anchor = str(anchor_path)
+                    _emit(job_id, "tts", f"🔒 Voice anchor locked from Scene 1 — remaining scenes clone this voice.", 23)
+                except Exception:
+                    pass  # Anchor save failure is non-fatal — continue without anchor
 
         total_audio_runtime = sum(s.get("audio_duration_sec", 0.0) for s in segments)
         _emit(job_id, "tts", f"🎵 All voiceovers ready. Exact total ad duration: {total_audio_runtime:.2f}s", 38)
@@ -217,6 +266,8 @@ async def run_pipeline(
                     ref_image_url,
                     model=ugc_image_model,
                     job_id=f"{job_id}_{i}",
+                    image_provider=image_provider,
+                    local_image_model=local_image_model,
                 )
                 return i, img_url
 
@@ -233,6 +284,105 @@ async def run_pipeline(
         # ────────────────────────────────────────────────────────────────────
         _emit(job_id, "video", f"Generating {len(segments)} cinematic hybrid scenes...", 55)
 
+        # Build job-level lighting anchor from brand colors for visual coherence across all beats
+        color_scheme = analysis.get("color_scheme", [])
+        brand_color_name = color_scheme[0].get("name", "neutral") if color_scheme else "neutral"
+        job_lighting_anchor = (
+            f"Softbox key light from upper-left at 45 degrees, warm white 5500K. "
+            f"Subtle diffused fill light from right. "
+            f"Deep neutral dark background. Brand accent: {brand_color_name} tones in product. "
+            "No lens flare. No distracting patterns."
+        )
+
+        # Infographic image-to-video B-roll (storyboard -> keyframes -> Veo -> voice-muxed scene).
+        # Runs in the background while avatar scenes render; scenes it can't finish fall back to the legacy path.
+        use_infog = os.getenv("INFOGRAPHIC_BROLL", "1") != "0" and any(
+            sg.get("scene_type") == "b_roll" for sg in segments
+        )
+
+        async def _run_infographic() -> dict:
+            try:
+                return await build_infographic_scenes(
+                    job_id=job_id,
+                    segments=segments,
+                    analysis=analysis,
+                    product_name=product_name,
+                    mode=product_mode,
+                    product_image_url=ref_image_url,
+                    on_log=lambda m: _emit(job_id, "video", m, 60),
+                    image_model=ugc_image_model,
+                    video_model=broll_video_model,
+                    video_provider=video_provider,
+                    local_video_model=local_video_model,
+                    image_provider=image_provider,
+                    local_image_model=local_image_model,
+                )
+            except Exception as infog_err:
+                _emit(job_id, "video", f"⚠️ Infographic B-roll failed ({infog_err}); using legacy B-roll.", 60)
+                return {}
+
+
+        infog_task = asyncio.create_task(_run_infographic()) if use_infog else None
+
+        # Legacy path: pre-enhance B-roll scenes sequentially to carry forward continuity (previous_end_hint)
+        # and validate voiceover-to-visual literal sync
+        broll_enhancements: dict[int, dict] = {}
+        last_broll_end_hint = ""
+        for b_idx, b_seg in (enumerate(segments) if not use_infog else []):
+            if b_seg.get("scene_type") == "b_roll":
+                b_dur = b_seg.get("audio_duration_sec", 5.0)
+                _emit(job_id, "video", f"✨ [Scene {b_idx+1} B-Roll] Enhancing prompts (voiceover-sync & lighting continuity)...", 54)
+                try:
+                    scene_dir = b_seg.get("scene_direction", {})
+                    if scene_dir.get("kling_prompt_start"):
+                        raw = (
+                            f"START: {scene_dir['kling_prompt_start']} | "
+                            f"END: {scene_dir.get('kling_prompt_end', '')} | "
+                            f"MOTION: {scene_dir.get('kling_motion_prompt', '')}"
+                        )
+                    else:
+                        raw = b_seg.get("kling_prompt") or b_seg.get("scene_prompt") or ""
+
+                    enhanced = await enhance_broll_prompt(
+                        voiceover_text=b_seg["text"],
+                        raw_prompt=raw,
+                        product_name=product_name,
+                        analysis=analysis,
+                        mode=product_mode,
+                        target_duration_sec=b_dur,
+                        lighting_anchor=job_lighting_anchor,
+                        previous_end_hint=last_broll_end_hint,
+                    )
+                    _emit(job_id, "video", f"📐 [Scene {b_idx+1} B-Roll] AI reasoning: {enhanced.get('visual_reasoning', '')[:100]}...", 54)
+                    val_prompts = validate_and_enforce_sync(
+                        keyframe_prompts={
+                            "start_prompt":        enhanced["start_frame_prompt"],
+                            "end_prompt":          enhanced["end_frame_prompt"],
+                            "video_motion_prompt": enhanced["motion_prompt"],
+                        },
+                        voiceover_text=b_seg["text"],
+                        mode=product_mode,
+                    )
+                    broll_enhancements[b_idx] = val_prompts
+                    last_broll_end_hint = val_prompts.get("end_prompt", "")
+                except Exception as enhance_err:
+                    _emit(job_id, "video", f"⚠️ [Scene {b_idx+1}] Enhancer fallback: {enhance_err}", 54)
+                    fb_prompts = await generate_broll_keyframe_prompts(
+                        product_name=product_name,
+                        analysis=analysis,
+                        segment=b_seg,
+                        mode=product_mode,
+                        lighting_anchor=job_lighting_anchor,
+                        previous_end_prompt=last_broll_end_hint,
+                    )
+                    val_fb = validate_and_enforce_sync(
+                        keyframe_prompts=fb_prompts,
+                        voiceover_text=b_seg["text"],
+                        mode=product_mode,
+                    )
+                    broll_enhancements[b_idx] = val_fb
+                    last_broll_end_hint = val_fb.get("end_prompt", "")
+
         async def _gen_single_hybrid_scene(idx: int, seg: dict):
             label = seg.get("label", f"scene_{idx+1}")
             stype = seg.get("scene_type", "avatar")
@@ -243,25 +393,74 @@ async def run_pipeline(
                 _emit(job_id, "video", f"[Scene {idx+1}/{len(segments)} {stype.upper()}] {msg}", pct_base)
 
             if stype == "b_roll":
-                # Pure Cinematic B-Roll using Kwai Kling Video, precision-muxed with voiceover
-                _emit(job_id, "video", f"🎬 Dispatching Scene {idx+1} to Kling Video (target audio: {dur:.2f}s)...", pct_base)
-                kling_raw_url = await generate_kling_broll(
-                    prompt=seg.get("kling_prompt") or seg.get("scene_prompt", ""),
-                    target_duration_sec=dur,
-                    segment_label=label,
-                    on_log=_log_cb,
+                if infog_task is not None:
+                    infog_res = await infog_task
+                    if idx in infog_res:
+                        _emit(job_id, "video", f"✅ Scene {idx+1} infographic B-roll ready ({dur:.2f}s)", pct_base + int(32 / len(segments)))
+                        return infog_res[idx]
+                # High-Fidelity Image-to-Video B-Roll (legacy path):
+                keyframe_prompts = broll_enhancements.get(idx)
+                if not keyframe_prompts:
+                    keyframe_prompts = await generate_broll_keyframe_prompts(
+                        product_name=product_name,
+                        analysis=analysis,
+                        segment=seg,
+                        mode=product_mode,
+                        lighting_anchor=job_lighting_anchor,
+                    )
+                    keyframe_prompts = validate_and_enforce_sync(keyframe_prompts, seg["text"], mode=product_mode)
+
+
+                # 2. Render Start and End keyframe images using Nano Banana Pro (google/gemini-3-pro-image)
+                _emit(job_id, "video", f"🖼️ [Scene {idx+1} B-Roll] Rendering photorealistic Start & End frames (Nano Banana Pro)...", pct_base)
+                start_img_url, end_img_url = await asyncio.gather(
+                    generate_ugc_image(
+                        ugc_prompt=keyframe_prompts["start_prompt"],
+                        product_image_url=ref_image_url,
+                        model=ugc_image_model,
+                        job_id=f"{job_id}_broll_start_{idx}",
+                        image_provider=image_provider,
+                        local_image_model=local_image_model,
+                    ),
+                    generate_ugc_image(
+                        ugc_prompt=keyframe_prompts["end_prompt"],
+                        product_image_url=ref_image_url,
+                        model=ugc_image_model,
+                        job_id=f"{job_id}_broll_end_{idx}",
+                        image_provider=image_provider,
+                        local_image_model=local_image_model,
+                    ),
                 )
 
-                # Precision-mux Kling video with scene voiceover
-                # Download Kling video to temp and mux to exact duration
-                local_broll = UPLOAD_DIR / f"kling_raw_{job_id}_{idx}.mp4"
+                # 3. Animate 9:16 video between Start & End keyframes
+                _emit(job_id, "video", f"🎬 [Scene {idx+1} B-Roll] Generating I2V video from keyframes ({video_provider.upper()}, {dur:.2f}s target)...", pct_base)
+                broll_raw_url = await generate_kling_broll(
+                    prompt=keyframe_prompts["video_motion_prompt"],
+                    target_duration_sec=dur,
+                    segment_label=label,
+                    first_frame_url=start_img_url,
+                    last_frame_url=end_img_url,
+                    model=broll_video_model or "google/veo-3.1-fast",
+                    on_log=_log_cb,
+                    video_provider=video_provider,
+                    local_video_model=local_video_model,
+                )
+
+
+                # Precision-mux B-Roll video with scene voiceover
+                local_broll = UPLOAD_DIR / f"broll_raw_{job_id}_{idx}.mp4"
                 local_audio = UPLOAD_DIR / f"audio_{job_id}_{idx}.wav"
                 local_audio.write_bytes(wav_bytes_list[idx])
 
-                async with httpx.AsyncClient(timeout=120) as client:
-                    resp = await client.get(kling_raw_url)
-                    resp.raise_for_status()
-                    local_broll.write_bytes(resp.content)
+                filename = broll_raw_url.split("/")[-1].split("?")[0]
+                existing_file = UPLOAD_DIR / filename
+                if existing_file.exists():
+                    local_broll = existing_file
+                else:
+                    async with httpx.AsyncClient(timeout=120) as client:
+                        resp = await client.get(broll_raw_url)
+                        resp.raise_for_status()
+                        local_broll.write_bytes(resp.content)
 
                 muxed_filename = f"broll_muxed_{job_id}_{idx}.mp4"
                 muxed_path = UPLOAD_DIR / muxed_filename
@@ -274,7 +473,7 @@ async def run_pipeline(
 
                 server_base = os.getenv("SERVER_URL", "http://localhost:8765").rstrip("/")
                 final_scene_url = f"{server_base}/uploads/{muxed_filename}"
-                _emit(job_id, "video", f"✅ Scene {idx+1} Kling B-Roll synced perfectly with voice ({dur:.2f}s)", pct_base + int(32 / len(segments)))
+                _emit(job_id, "video", f"✅ Scene {idx+1} I2V B-Roll synced with voice ({dur:.2f}s)", pct_base + int(32 / len(segments)))
                 return final_scene_url
 
             else:
@@ -324,6 +523,7 @@ async def run_pipeline(
                 burn_captions=burn_captions,
                 audio_urls=audio_urls,
                 brand_color=brand_color_tuple,
+                motion_style=motion_style,
             )
         else:
             video_url = await compose_final_video(
@@ -333,32 +533,44 @@ async def run_pipeline(
                 burn_captions=burn_captions,
                 audio_urls=audio_urls,
                 brand_color=brand_color_tuple,
+                motion_style=motion_style,
             )
+
 
         job["video_url"] = video_url
 
         # ────────────────────────────────────────────────────────────────────
-        # Done
+        # Done — mark completed BEFORE emitting done event so /result/ is ready
         # ────────────────────────────────────────────────────────────────────
-        _emit(
-            job_id, "done", "Your UGC ad is ready!", 100,
-            job_id=job_id,
-            video_url=video_url,
-            script=job.get("script", ""),
-            raw_script=job.get("raw_script", ""),
-            display_script=job.get("display_script", ""),
-            audio_url=job.get("audio_url", ""),
-            ugc_image_url=job.get("ugc_image_url", ""),
-            segments=job.get("segments", []),
-            clip_urls=job.get("clip_urls", []),
-            analysis=job.get("analysis", {}),
-        )
         job["status"] = "completed"
+        try:
+            _emit(
+                job_id, "done", "Your UGC ad is ready!", 100,
+                video_url=video_url,
+                script=job.get("script", ""),
+                raw_script=job.get("raw_script", ""),
+                display_script=job.get("display_script", ""),
+                audio_url=job.get("audio_url", ""),
+                ugc_image_url=job.get("ugc_image_url", ""),
+                segments=job.get("segments", []),
+                clip_urls=job.get("clip_urls", []),
+                analysis=job.get("analysis", {}),
+            )
+        except Exception as emit_err:
+            print(f"[{job_id[:8]}] Warning emitting done event: {emit_err}", flush=True)
 
     except Exception as exc:
-        _emit(job_id, "error", f"Error: {exc}", job.get("progress", 0))
-        job["status"] = "failed"
-        job["error"]  = str(exc)
+        _bg = locals().get("infog_task")
+        if _bg is not None and not _bg.done():
+            _bg.cancel()
+        if job.get("video_url"):
+            # Video was already composed successfully
+            job["status"] = "completed"
+            print(f"[{job_id[:8]}] Pipeline completed with post-processing notice: {exc}", flush=True)
+        else:
+            _emit(job_id, "error", f"Error: {exc}", job.get("progress", 0))
+            job["status"] = "failed"
+            job["error"]  = str(exc)
 
 
 # ─── Routes ──────────────────────────────────────────────────────────────────
@@ -366,6 +578,25 @@ async def run_pipeline(
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
+
+
+@app.get("/api/gpu-status")
+async def get_gpu_status():
+    """Live GPU server health and status check."""
+    try:
+        from pipeline.local_gpu_client import LocalGPUClient
+        client = LocalGPUClient()
+        available = client.is_available()
+        return {
+            "available": available,
+            "url": client.base_url,
+            "models": {
+                "image": ["flux-dev", "flux-schnell", "flux-1.1-pro"],
+                "video": ["ltx23_distilled_q6", "ltx21"],
+            }
+        }
+    except Exception as e:
+        return {"available": False, "error": str(e)}
 
 
 @app.post("/upload/avatar")
@@ -387,12 +618,19 @@ async def generate(
     product_mode:           str            = Form("physical"),
     product_image_url:      str            = Form(""),
     voice_emotion:          str            = Form("excited"),
-    ugc_image_model:        str            = Form("google/gemini-2.5-flash-image"),
+    image_provider:         str            = Form("local"),
+    local_image_model:      str            = Form("flux-dev"),
+    ugc_image_model:        str            = Form("openai/gpt-image-2"),
+    video_provider:         str            = Form("local"),
+    local_video_model:      str            = Form("ltx23_distilled_q6"),
+    broll_video_model:      str            = Form("bytedance/seedance-1-5-pro"),
+    motion_style:           str            = Form("reel"),
     avatar_url:             str            = Form(""),
     burn_captions:          str            = Form("false"),
     video_backend:          str            = Form("wavespeed"),
-    openrouter_video_model: str            = Form("kwaivgi/kling-video-o1"),
+    openrouter_video_model: str            = Form("google/veo-3.1-fast"),
     custom_script:          str            = Form(""),
+    tts_engine:             str            = Form("voxcpm"),
     product_image_file:     Optional[UploadFile] = File(None),
     reference_audio_file:   Optional[UploadFile] = File(None),
 ):
@@ -442,6 +680,12 @@ async def generate(
         "product_mode":           product_mode,
         "video_backend":          video_backend,
         "openrouter_video_model": openrouter_video_model,
+        "tts_engine":             tts_engine,
+        "image_provider":         image_provider,
+        "local_image_model":      local_image_model,
+        "video_provider":         video_provider,
+        "local_video_model":      local_video_model,
+        "motion_style":           motion_style,
         "progress":               0,
         "current_step":           "queued",
         "steps":                  [],
@@ -464,9 +708,17 @@ async def generate(
         openrouter_video_model=openrouter_video_model,
         custom_script=custom_script,
         reference_audio_path=ref_audio_path_str,
+        tts_engine=tts_engine,
+        broll_video_model=broll_video_model,
+        image_provider=image_provider,
+        local_image_model=local_image_model,
+        video_provider=video_provider,
+        local_video_model=local_video_model,
+        motion_style=motion_style,
     ))
 
     return {"job_id": job_id}
+
 
 
 @app.get("/status/{job_id}")
@@ -503,6 +755,7 @@ async def status_stream(job_id: str):
                     "analysis":               job.get("analysis", {}),
                     "video_backend":          job.get("video_backend", "wavespeed"),
                     "openrouter_video_model": job.get("openrouter_video_model", ""),
+                    "tts_engine":             job.get("tts_engine", "voxcpm"),
                     "error":                  job.get("error", ""),
                 }
                 yield f"data: {json.dumps(final)}\n\n"
@@ -519,7 +772,33 @@ async def status_stream(job_id: str):
 
 @app.get("/result/{job_id}")
 async def get_result(job_id: str):
-    job = _job(job_id)
+    job = JOBS.get(job_id)
+    if not job:
+        # Check if video exists on disk from previous completed run or service restart
+        matches = list(UPLOAD_DIR.glob(f"final_{job_id}*.mp4"))
+        if matches:
+            return {
+                "job_id": job_id,
+                "status": "completed",
+                "video_url": f"/static/uploads/{matches[0].name}",
+                "progress": 100,
+                "steps": [],
+            }
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    video_url = job.get("video_url", "")
+    if not video_url:
+        matches = list(UPLOAD_DIR.glob(f"final_{job_id}*.mp4"))
+        if matches:
+            video_url = f"/static/uploads/{matches[0].name}"
+            job["video_url"] = video_url
+            job["status"] = "completed"
+            job["progress"] = 100
+            job["error"] = None
+    elif job.get("status") != "completed":
+        job["status"] = "completed"
+        job["progress"] = 100
+        job["error"] = None
     return {
         "job_id":                 job_id,
         "status":                 job.get("status"),
@@ -535,6 +814,7 @@ async def get_result(job_id: str):
         "analysis":               job.get("analysis", {}),
         "video_backend":          job.get("video_backend", "wavespeed"),
         "openrouter_video_model": job.get("openrouter_video_model", ""),
+        "tts_engine":             job.get("tts_engine", "voxcpm"),
         "error":                  job.get("error", ""),
         "progress":               job.get("progress", 0),
         "steps":                  job.get("steps", []),

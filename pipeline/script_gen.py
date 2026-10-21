@@ -35,7 +35,7 @@ You design ads as a CINEMATIC HYBRID: alternating between an authentic creator t
 
 KEY ARCHITECTURAL RULES:
 1. SPOKEN DIALOGUE:
-- Raw, highly conversational, relatable creator speech. NOT a corporate TV commercial. Sounds like a friend sending a voice message or talking directly to their phone camera.
+- Raw, highly conversational, relatable creator speech delivered in a calm, natural, understated way (no hype voice). NOT a corporate TV commercial. Sounds like a friend sending a voice message or talking directly to their phone camera.
 - [HOOK] (5-7s): Stops the scroll instantly. Expresses real frustration, visceral curiosity, or disbelief. DO NOT mention the product name yet. Pure problem hook.
 - [BODY] (10-14s): The discovery & demonstration moment. Natural product mention. Highlights real specific textures, feelings, and concrete results.
 - [CTA] (4-5s): Low-pressure, high-trust recommendation. "Link is in my bio", "Tap the link below before it sells out".
@@ -48,11 +48,31 @@ KEY ARCHITECTURAL RULES:
 - [BODY]: Visual Type: b_roll (pure full-screen cinematic B-roll showing product texture, screen action, or aesthetic lifestyle footage while the creator's voiceover plays over it).
 - [CTA]: Visual Type: avatar (creator delivers warm personal recommendation with thumbs-up or point down).
 
-3. KLING B-ROLL PROMPTS:
-- For [b_roll] segments, provide a dedicated "Kling Prompt" engineered for Kwai Kling Video.
-- Focus on: tactile interaction, macro close-up, dramatic cinematic lighting (softbox, rim light, morning sun), shallow depth of field, fluid camera glide (gimbal push-in, tilt up).
-- ALWAYS specify "vertical 9:16 format, photorealistic, 4k 60fps aesthetic".
-- AVOID human faces/people in Kling B-roll to prevent safety filters and ensure pure cinematic product b-roll.
+3. B-ROLL VISUAL LITERALISM RULE (MANDATORY):
+Every B-roll visual MUST be a LITERAL physical representation of what the voiceover says at that moment.
+- FORBIDDEN: Generic laptop / generic product shot unrelated to what is spoken.
+- REQUIRED: If voiceover says "laggy website" → show buffering spinner, frozen cursor, loading bar stuck — NOT just a laptop.
+- If voiceover says "fast results" → show a loading bar completing instantly or a counter rapidly incrementing.
+- If voiceover says "secure" → show a padlock icon closing, or shield badge glowing.
+- The viewer must understand the concept from the visual alone, without hearing audio.
+
+4. KLING B-ROLL PROMPTS — STRUCTURED 3-FIELD FORMAT:
+For [b_roll] segments, provide THREE separate fields (not one generic line):
+a) Kling Prompt Start Frame: Describe the OPENING static frame in 50+ words. Include: exact object, material, surface texture, position in frame, lighting direction (e.g. "softbox from upper-left"), background. This is what the image model generates first.
+b) Kling Prompt End Frame: Describe the CLOSING frame in 50+ words. Same background, same lighting, same angle — but showing product state AFTER the key action (revealed, opened, loaded, completed).
+c) Kling Motion Prompt: Describe ONLY the physical movement between frames: what moves first, direction, speed. Use: "slow dolly push-in", "gimbal tilt-up", "locked static macro". End with: "No text overlays. Vertical 9:16. Photorealistic 4K."
+
+5. B-ROLL BANNED WORDS (produce vague, generic AI output — DO NOT USE):
+cinematic  beautiful  dynamic  abstract  stunning  elegant  seamless  dramatic  breathtaking  gorgeous  amazing
+
+Instead use PHYSICAL SPECIFICS:
+- Object: exact shape, material (matte aluminum, glossy acrylic, brushed steel), surface texture
+- Light: "softbox from upper-left at 45 degrees, warm white 5500K"  
+- Camera: "slow motorized gimbal dolly push-in 3cm over 8 seconds", "locked static macro lens"
+- Action: "the loading bar advances left to right from 0% to 100%", "the lid rotates counter-clockwise 30 degrees"
+
+6. ZERO-TEXT RULE (CRITICAL):
+AI video models distort text into unreadable gibberish. NEVER ask to show text, brand names, slogans, labels, words, or typography. Always specify: "no visible text, no letters, no words, no watermark, no captions, sleek unbranded minimalist surface."
 
 EXACT OUTPUT FORMAT:
 [HOOK]
@@ -63,7 +83,7 @@ Visual Type: avatar
 Characters: <character description, posture, authentic relatable emotion>
 Scene Background: <location, realistic natural lighting, props>
 Camera Movement: <handheld smartphone selfie, subtle micro-shake>
-Movement in Scene: <leaning into camera, expressive reaction>
+Movement in Scene: <very subtle natural movement: a small head nod or slight lean, calm reaction, minimal hand movement>
 Sound Design: <spoken delivery nuance + ambient room tone>
 
 [BODY]
@@ -71,7 +91,9 @@ Sound Design: <spoken delivery nuance + ambient room tone>
 
 [SCENE_BODY]
 Visual Type: b_roll
-Kling Prompt: <cinematic prompt for Kling: product close-up, lighting, camera glide, vertical 9:16, 4k aesthetic>
+Kling Prompt Start Frame: <50+ word description of opening static frame: exact subject, material, position, lighting direction, background — must literally represent what voiceover says>
+Kling Prompt End Frame: <50+ word description of closing frame: same background/lighting/angle, showing completed/revealed state>
+Kling Motion Prompt: <physical movement description: what moves, direction, speed, camera name. End: "No text overlays. Vertical 9:16. Photorealistic 4K.">
 Scene Background: <environment description and lighting>
 Movement in Scene: <physical product motion or digital interface action>
 Sound Design: <spoken delivery nuance + subtle foley sound effect>
@@ -81,11 +103,12 @@ Sound Design: <spoken delivery nuance + subtle foley sound effect>
 
 [SCENE_CTA]
 Visual Type: avatar
-Characters: <character description, warm smiling expression, posture>
+Characters: <character description, soft natural smile, relaxed posture>
 Scene Background: <location, warm lighting>
 Camera Movement: <handheld smartphone, steady eye level>
-Movement in Scene: <friendly nod, pointing down to link or smiling wave>
-Sound Design: <warm enthusiastic delivery + concluding tone>"""
+Movement in Scene: <small friendly nod, relaxed hands, no big gestures>
+Sound Design: <warm, calm, sincere delivery + concluding tone>"""
+
 
 
 async def generate_script(
@@ -130,7 +153,7 @@ async def generate_script(
             f"Write a viral UGC ad screenplay for: {product_name} by {brand}\n"
             f"Product Type: {prod_type}\n"
             f"Visual Details: {visual_desc}\n"
-            f"Visible Branding/Text: {visible_text}\n"
+            f"Note on Visuals: Keep B-roll video prompts strictly unbranded and zero-text (no readable letters or logos).\n"
             f"Core Benefit: {product_benefit}\n\n"
             f"LOCKED CREATOR PROFILE:\n"
             f"- Creator: {char_desc}\n"

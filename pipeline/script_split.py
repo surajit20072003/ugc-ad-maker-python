@@ -19,6 +19,72 @@ import re
 from typing import TypedDict, Optional
 
 
+def _clean_spoken_text(text: str) -> str:
+    """
+    Strip non-speech content that the LLM or user injects inline with dialogue before
+    the text reaches the TTS engine.
+
+    Removes:
+    - Parenthetical stage directions: (leaning in), (whispering)
+    - Asterisk action markers / markdown: *pauses*, *gestures at camera*, **bold**
+    - Bracketed emotion/action tags: [excited], [pause], [hook]
+    - Angle-bracket tags: <encourage>, <emotion: hook>
+    - Director key lines that bled through: 'Camera: slow zoom', 'Sound Design: ...'
+    - Header lines that bled through: 'HOOK | 0-8s', 'CTA: ...'
+    - Stray timestamp fragments: '0-8 seconds', '0:00 - 0:08'
+    - Smart/curly quotes & straight quotes that become spoken verbatim
+    - Replaces inline em/en dashes with comma for natural speech rhythm
+    """
+    # Remove parenthetical stage directions (up to ~200 chars)
+    text = re.sub(r'\([^)]{0,200}\)', '', text)
+    # Remove asterisk action markers
+    text = re.sub(r'\*[^*]{0,200}\*', '', text)
+    # Remove bracketed short tags (emotion / action labels, NOT scene headers)
+    text = re.sub(r'\[[a-zA-Z][a-zA-Z0-9_ ]{0,40}\]', '', text)
+    # Remove angle-bracket tags
+    text = re.sub(r'<[a-zA-Z][a-zA-Z0-9_: ]{0,40}>', '', text)
+    # Remove director key lines that bled through (case-insensitive, full line)
+    _DIRECTOR_KEYS = (
+        r'visual type|characters|scene background|background|camera movement'
+        r'|camera|movement in scene|movement|sound design|kling prompt'
+        r'|kling motion|start frame|end frame'
+    )
+    text = re.sub(
+        rf'^(?:{_DIRECTOR_KEYS})\s*:.*$',
+        '',
+        text,
+        flags=re.IGNORECASE | re.MULTILINE,
+    )
+    # Remove scene header/label lines that bled through (e.g. HOOK | 0-8s)
+    text = re.sub(
+        r'^(?:[\*\#\-\s_~|—–]*)(?:HOOK|PROBLEM|BENEFITS?|EXPERIENCE|CTA|SOLUTION|OUTRO|INTRO)\b[^\n]*$',
+        '',
+        text,
+        flags=re.IGNORECASE | re.MULTILINE,
+    )
+    # Strip standalone timestamps
+    text = re.sub(r'\b\d+\s*[-–—]\s*\d+\s*(?:sec(?:onds)?|s)\b', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'\b\d+:\d{2}\s*[-–—]\s*\d+:\d{2}\b', '', text)
+    # Normalize quotes
+    text = text.replace('\u201c', '').replace('\u201d', '')
+    text = text.replace('\u2018', '').replace('\u2019', "'")
+    text = text.replace('"', '')
+    # Strip markdown symbols
+    text = text.replace('*', '').replace('#', '').replace('~', '')
+    # Replace inline em/en-dashes with comma for natural speech pauses
+    text = re.sub(r'\s*[\u2014\u2013]\s*', ', ', text)
+    text = re.sub(r'-{2,}', ', ', text)
+    # Clean leading/trailing punctuation/dashes/pipes/colons
+    text = re.sub(r'^[\s,.:|;—–\-]+', '', text)
+    text = re.sub(r'[\s|—–\-]+$', '', text)
+    # Collapse multiple spaces / newlines to single space
+    text = re.sub(r'\n+', ' ', text)
+    text = re.sub(r'[ \t]{2,}', ' ', text)
+    # Clean double commas if any
+    text = re.sub(r',\s*,', ',', text)
+    return text.strip()
+
+
 class Segment(TypedDict, total=False):
     label: str               # "hook" | "body" | "cta" | "scene_1" ...
     text: str                # spoken dialogue only (for TTS & captions)
@@ -31,10 +97,16 @@ class Segment(TypedDict, total=False):
 
 
 def _parse_scene_block(scene_text: str) -> dict:
-    """Parse key: value lines from a [SCENE_...] block."""
+    """Parse key: value lines from a [SCENE_...] block.
+    Supports both legacy single-field Kling Prompt and new 3-field format:
+      Kling Prompt Start Frame, Kling Prompt End Frame, Kling Motion Prompt
+    """
     direction = {
         "visual_type": "",
-        "kling_prompt": "",
+        "kling_prompt": "",           # legacy / combined
+        "kling_prompt_start": "",     # new: opening frame description
+        "kling_prompt_end": "",       # new: closing frame description
+        "kling_motion_prompt": "",    # new: motion/camera description
         "characters": "",
         "scene_background": "",
         "camera_movement": "",
@@ -51,6 +123,17 @@ def _parse_scene_block(scene_text: str) -> dict:
             current_key = "visual_type"
             val = line_s.split(":", 1)[1].strip().lower()
             direction[current_key] = "b_roll" if "b_roll" in val or "broll" in val else "avatar"
+        # New 3-field format (check before legacy "kling prompt:" to avoid prefix collision)
+        elif lower_line.startswith("kling prompt start frame:") or lower_line.startswith("kling start frame:"):
+            current_key = "kling_prompt_start"
+            direction[current_key] = line_s.split(":", 1)[1].strip()
+        elif lower_line.startswith("kling prompt end frame:") or lower_line.startswith("kling end frame:"):
+            current_key = "kling_prompt_end"
+            direction[current_key] = line_s.split(":", 1)[1].strip()
+        elif lower_line.startswith("kling motion prompt:") or lower_line.startswith("kling motion:"):
+            current_key = "kling_motion_prompt"
+            direction[current_key] = line_s.split(":", 1)[1].strip()
+        # Legacy single-field format
         elif lower_line.startswith("kling prompt:") or lower_line.startswith("kling:") or lower_line.startswith("b_roll prompt:"):
             current_key = "kling_prompt"
             direction[current_key] = line_s.split(":", 1)[1].strip()
@@ -71,6 +154,14 @@ def _parse_scene_block(scene_text: str) -> dict:
             direction[current_key] = line_s.split(":", 1)[1].strip()
         elif current_key:
             direction[current_key] += " " + line_s
+
+    # Synthesise combined kling_prompt from 3-field format for backward compatibility
+    if not direction["kling_prompt"] and direction["kling_prompt_start"]:
+        direction["kling_prompt"] = (
+            f"{direction['kling_prompt_start']} "
+            f"Transition to: {direction['kling_prompt_end']} "
+            f"Motion: {direction['kling_motion_prompt']}"
+        ).strip()
 
     return direction
 
@@ -97,9 +188,9 @@ def parse_segments(script: str) -> list[Segment]:
         print(f"[SCRIPT_SPLIT] Multiple ad variations detected ({len(parts)} ads). Processing Variation 1 (Scenes 1-5).", flush=True)
         clean_script = parts[0]
 
-    # 1. Check for SCENE 1..N or [SCENE 1..N]
+    # 1. Check for SCENE 1..N or [SCENE 1..N] (supports markdown *, **, #, timestamps, etc.)
     scene_pattern = re.compile(
-        r'(?:^|\n)\s*(?:\[?\s*SCENE\s*(\d+)[^\n\]]*\]?|(\d+)\}\s*SCENE\s*(\d+)[^\n\]]*|\bSCENE\s*(\d+)\b)',
+        r'(?:^|\n)[ \t*#_~—–]*(?:\[?\s*SCENE\s*(\d+)[^\n\]]*\]?|(\d+)[}\)]\s*SCENE\s*(\d+)[^\n]*|\bSCENE\s*(\d+)[^\n]*)[ \t*#_~—–]*(?:\r?\n|$)',
         re.IGNORECASE
     )
     scene_matches = list(scene_pattern.finditer(clean_script))
@@ -148,12 +239,18 @@ def _parse_numbered_scenes(script: str, matches: list[re.Match]) -> list[Segment
             if in_scene_dir:
                 scene_dir_text += line_s + "\n"
             else:
-                # Remove header timestamp fragments if they leaked
-                cleaned_line = re.sub(r'^[—–-]\s*\d+[\s–-]+\d+\s*sec\b', '', line_s, flags=re.IGNORECASE).strip()
-                if cleaned_line:
-                    lines.append(cleaned_line)
+                # Discard lines that are pure headers or stage labels
+                if re.match(r'^(?:[\*\#\-\s_~|—–]*)(?:SCENE\s*\d+|HOOK|PROBLEM|BENEFITS?|EXPERIENCE|CTA|SOLUTION|OUTRO|INTRO)\b', line_s, re.IGNORECASE):
+                    quote_m = re.search(r'["“](.+?)["”]', line_s)
+                    if quote_m:
+                        lines.append(quote_m.group(1))
+                    continue
+                # Discard standalone timestamp lines like "0-8 seconds" or "| 0–8 seconds*"
+                if re.match(r'^[\*\s|—–-]*\d+[\s–-]+\d+\s*(?:sec(?:onds)?|s)?[\*\s]*$', line_s, re.IGNORECASE):
+                    continue
+                lines.append(line_s)
 
-        spoken_text = " ".join(lines).replace('“', '"').replace('”', '"').strip()
+        spoken_text = _clean_spoken_text(" ".join(lines))
         if not spoken_text:
             continue
 
@@ -182,7 +279,7 @@ def _parse_numbered_scenes(script: str, matches: list[re.Match]) -> list[Segment
         if not kling_prompt and scene_type == "b_roll":
             bg = scene_dir.get("scene_background", "modern aesthetic studio")
             mov = scene_dir.get("movement_in_scene", "product demonstration")
-            kling_prompt = f"Cinematic b-roll macro shot: {mov} in {bg}, shallow depth of field, dramatic lighting, vertical 9:16 format, photorealistic 4k"
+            kling_prompt = f"Cinematic b-roll macro shot: {mov} in {bg}, clean unbranded surface, no visible text or labels, shallow depth of field, dramatic lighting, vertical 9:16 format, photorealistic 4k"
 
         # Build prompt
         if scene_dir.get("characters") or scene_dir.get("movement_in_scene"):
@@ -233,7 +330,7 @@ def _parse_hook_body_cta(script: str) -> list[Segment]:
             p = rem.upper().find(tag.upper())
             if p != -1 and p < earliest_stop:
                 earliest_stop = p
-        spoken_text = rem[:earliest_stop].strip()
+        spoken_text = _clean_spoken_text(rem[:earliest_stop])
 
         # Extract scene tag if present
         sidx = script.upper().find(scene_tag.upper())
@@ -258,7 +355,7 @@ def _parse_hook_body_cta(script: str) -> list[Segment]:
             if not kling_prompt and scene_type == "b_roll":
                 bg = scene_dir.get("scene_background", "clean aesthetic studio")
                 mov = scene_dir.get("movement_in_scene", "product demonstration")
-                kling_prompt = f"Cinematic close-up product b-roll: {mov} in {bg}, realistic lighting, slow smooth camera glide, 9:16 vertical video, 4k"
+                kling_prompt = f"Cinematic close-up product b-roll: {mov} in {bg}, clean minimalist unbranded packaging, no visible text, realistic lighting, slow smooth camera glide, 9:16 vertical video, 4k"
 
             components = []
             if scene_dir.get("characters"): components.append(scene_dir["characters"])

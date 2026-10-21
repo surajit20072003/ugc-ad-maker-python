@@ -46,6 +46,126 @@ cardOpenrouter.addEventListener('click', () => {
   openrouterModelContainer.style.display = '';
 });
 
+// ─── Voice Engine Selection ───────────────────────────────────────────────────
+const cardTtsVoxcpm    = document.getElementById('card-tts-voxcpm');
+const cardTtsBytedance = document.getElementById('card-tts-bytedance');
+const ttsEngineInput   = document.getElementById('tts_engine');
+const ttsHint          = document.getElementById('tts-hint');
+
+if (cardTtsVoxcpm && cardTtsBytedance && ttsEngineInput) {
+  cardTtsVoxcpm.addEventListener('click', () => {
+    cardTtsVoxcpm.classList.add('active');
+    cardTtsBytedance.classList.remove('active');
+    ttsEngineInput.value = 'voxcpm';
+    if (ttsHint) ttsHint.textContent = 'If left empty, VoxCPM uses its default natural creator voice.';
+  });
+
+  cardTtsBytedance.addEventListener('click', () => {
+    cardTtsBytedance.classList.add('active');
+    cardTtsVoxcpm.classList.remove('active');
+    ttsEngineInput.value = 'bytedance';
+    if (ttsHint) ttsHint.textContent = 'If left empty, ByteDance Seed Audio uses its natural AI voice. Upload audio above to clone your voice!';
+  });
+}
+
+// ─── Image Generation Provider Selection ────────────────────────────────────
+const cardImgLocal = document.getElementById('card-imgprovider-local');
+const cardImgCloud = document.getElementById('card-imgprovider-cloud');
+const imageProviderInput = document.getElementById('image_provider');
+const cloudImageModelContainer = document.getElementById('cloud-image-model-container');
+const localImageModelContainer = document.getElementById('local-image-model-container');
+
+if (cardImgLocal && cardImgCloud) {
+  cardImgLocal.addEventListener('click', () => {
+    cardImgLocal.classList.add('active');
+    cardImgCloud.classList.remove('active');
+    if (imageProviderInput) imageProviderInput.value = 'local';
+    if (cloudImageModelContainer) cloudImageModelContainer.style.display = 'none';
+    if (localImageModelContainer) localImageModelContainer.style.display = '';
+  });
+
+  cardImgCloud.addEventListener('click', () => {
+    cardImgCloud.classList.add('active');
+    cardImgLocal.classList.remove('active');
+    if (imageProviderInput) imageProviderInput.value = 'cloud';
+    if (cloudImageModelContainer) cloudImageModelContainer.style.display = '';
+    if (localImageModelContainer) localImageModelContainer.style.display = 'none';
+  });
+}
+
+// ─── B-Roll Video (I2V) Provider Selection ──────────────────────────────────
+const cardVidLocal = document.getElementById('card-vidprovider-local');
+const cardVidCloud = document.getElementById('card-vidprovider-cloud');
+const videoProviderInput = document.getElementById('video_provider');
+const cloudVideoModelContainer = document.getElementById('cloud-video-model-container');
+const localVideoModelContainer = document.getElementById('local-video-model-container');
+
+if (cardVidLocal && cardVidCloud) {
+  cardVidLocal.addEventListener('click', () => {
+    cardVidLocal.classList.add('active');
+    cardVidCloud.classList.remove('active');
+    if (videoProviderInput) videoProviderInput.value = 'local';
+    if (cloudVideoModelContainer) cloudVideoModelContainer.style.display = 'none';
+    if (localVideoModelContainer) localVideoModelContainer.style.display = '';
+  });
+
+  cardVidCloud.addEventListener('click', () => {
+    cardVidCloud.classList.add('active');
+    cardVidLocal.classList.remove('active');
+    if (videoProviderInput) videoProviderInput.value = 'cloud';
+    if (cloudVideoModelContainer) cloudVideoModelContainer.style.display = '';
+    if (localVideoModelContainer) localVideoModelContainer.style.display = 'none';
+  });
+}
+
+// ─── Motion / Animation Style Selection ─────────────────────────────────────
+const motionStyleInput = document.getElementById('motion_style');
+
+function setMotionStyle(style) {
+  if (motionStyleInput) motionStyleInput.value = style;
+  const cards = {
+    'reel': document.getElementById('card-style-reel'),
+    'clean': document.getElementById('card-style-clean'),
+    'minimal': document.getElementById('card-style-minimal')
+  };
+  Object.keys(cards).forEach(k => {
+    if (cards[k]) {
+      if (k === style) cards[k].classList.add('active');
+      else cards[k].classList.remove('active');
+    }
+  });
+}
+window.setMotionStyle = setMotionStyle;
+
+// ─── Live GPU Status Check ──────────────────────────────────────────────────
+async function checkGpuStatus() {
+  const statusImg = document.getElementById('gpu-status-img');
+  const dotImg = document.getElementById('gpu-dot-img');
+  const statusVid = document.getElementById('gpu-status-vid');
+  const dotVid = document.getElementById('gpu-dot-vid');
+
+  try {
+    const res = await fetch('/api/gpu-status');
+    if (res.ok) {
+      const data = await res.json();
+      if (data.available) {
+        if (statusImg) statusImg.innerHTML = '<span style="color:#10b981;font-weight:600;">● GPU Online (3x L40S)</span>';
+        if (statusVid) statusVid.innerHTML = '<span style="color:#10b981;font-weight:600;">● GPU Online (3x L40S)</span>';
+        if (dotImg) { dotImg.className = 'gpu-status-dot online'; dotImg.title = 'Local GPU server ready'; }
+        if (dotVid) { dotVid.className = 'gpu-status-dot online'; dotVid.title = 'Local GPU server ready'; }
+        return;
+      }
+    }
+    throw new Error('GPU offline');
+  } catch (e) {
+    if (statusImg) statusImg.innerHTML = '<span style="color:#94a3b8;">○ GPU Offline (Auto-fallback to Cloud)</span>';
+    if (statusVid) statusVid.innerHTML = '<span style="color:#94a3b8;">○ GPU Offline (Auto-fallback to Cloud)</span>';
+    if (dotImg) { dotImg.className = 'gpu-status-dot offline'; dotImg.title = 'Offline'; }
+    if (dotVid) { dotVid.className = 'gpu-status-dot offline'; dotVid.title = 'Offline'; }
+  }
+}
+checkGpuStatus();
+
 // ─── Avatar upload ────────────────────────────────────────────────────────────
 const avatarInput       = document.getElementById('avatar-file');
 const avatarPreview     = document.getElementById('avatar-preview');
@@ -249,22 +369,41 @@ function listenToProgress(jobId) {
       generateBtn.disabled = false;
       generateBtn.innerHTML = '🎬 Generate Another Ad';
 
-      // Always fetch full authoritative result to ensure video_url & metadata are fully populated
-      fetch(`/result/${jobId}`)
-        .then(r => r.json())
+      // Retry fetch — /result/ may not see status=completed for up to one polling tick
+      fetchResultWithRetry(jobId)
         .then(fullResult => {
-          showResult(fullResult);
+          if (fullResult) {
+            showResult(fullResult);
+          } else {
+            // Fallback: use SSE step data directly (done step carries video_url via kwargs)
+            if (!data.video_url) {
+              appendTerminalLog(time, 'error', '⚠️ video_url not received — check server logs.');
+            }
+            showResult({ ...data, job_id: jobId });
+          }
         })
-        .catch(err => {
-          console.error('Failed fetching /result', err);
-          showResult(data);
-        });
+        .catch(() => showResult({ ...data, job_id: jobId }));
+
     } else if (step === 'error' || step === 'failed') {
       addStep('❌', message || error, 'error');
-      appendTerminalLog(time, 'error', `Pipeline failed: ${message || error}`);
+      appendTerminalLog(time, 'error', `Pipeline error: ${message || error}`);
       eventSource.close();
       generateBtn.disabled = false;
       generateBtn.innerHTML = '🎬 Generate Complete UGC Ad';
+      // Recovery: the video may have been fully composed before the error occurred.
+      // Try /result/ endpoint — if it has a video_url, show the player anyway.
+      appendTerminalLog(null, 'info', '🔍 Checking if video was completed before error...');
+      fetchResultWithRetry(jobId, 4, 1500).then(result => {
+        if (result && result.video_url) {
+          appendTerminalLog(null, 'info', '✅ Video recovered! Displaying result despite server error...');
+          addStep('✅', 'Video recovered and ready!', 'active');
+          showResult(result);
+        } else {
+          appendTerminalLog(null, 'error', '❌ No completed video found. Please retry.');
+        }
+      }).catch(() => {
+        appendTerminalLog(null, 'error', '❌ Could not check for recovered video.');
+      });
     } else {
       document.querySelectorAll('.step-item').forEach(el => el.classList.remove('active'));
       addStep(stepIcon(step), message, 'active');
@@ -280,6 +419,7 @@ function listenToProgress(jobId) {
     generateBtn.innerHTML = '🎬 Generate Complete UGC Ad';
   };
 }
+
 
 function appendTerminalLog(time, step, message) {
   const terminalConsole = document.getElementById('terminal-console');
@@ -356,6 +496,21 @@ function stepIcon(step) {
   return icons[step] || '⚙️';
 }
 
+// Retry helper — polls /result/{jobId} until status=completed and video_url is present
+async function fetchResultWithRetry(jobId, maxAttempts = 6, delayMs = 1200) {
+  for (let i = 0; i < maxAttempts; i++) {
+    try {
+      const r = await fetch(`/result/${jobId}`);
+      if (r.ok) {
+        const d = await r.json();
+        if (d.status === 'completed' && d.video_url) return d;
+      }
+    } catch(e) { /* network blip — retry */ }
+    if (i < maxAttempts - 1) await new Promise(res => setTimeout(res, delayMs));
+  }
+  return null;  // all retries exhausted
+}
+
 function showResult(data) {
   const { job_id, video_url, script, raw_script, display_script, audio_url, ugc_image_url, segments, clip_urls, analysis } = data;
   resultPanel.classList.add('visible');
@@ -369,6 +524,14 @@ function showResult(data) {
     videoEl.load();
   } else {
     videoEl.style.display = 'none';
+    const wrap = document.querySelector('.result-video-wrap');
+    const existingErr = wrap && wrap.querySelector('.result-video-error');
+    if (wrap && !existingErr) {
+      wrap.insertAdjacentHTML('afterbegin',
+        '<div class="result-video-error" style="color:#f87171;padding:20px;text-align:center;font-size:13px">'
+        + '⚠️ Video URL not received yet — script and analysis are loaded below. '
+        + 'Refresh the page with the job_id in the URL to retry.</div>');
+    }
   }
 
   // Script
@@ -531,7 +694,7 @@ window.addEventListener('DOMContentLoaded', () => {
         return r.json();
       })
       .then(data => {
-        if (data.status === 'completed' && data.video_url) {
+        if (data && data.video_url) {
           currentJobId = qJobId;
           showResult(data);
         }

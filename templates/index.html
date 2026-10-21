@@ -25,11 +25,11 @@
   <header class="header">
     <div class="logo-badge">
       <span class="dot"></span>
-      AI UGC Ad Maker v3.1 • Director Edition
+      AI UGC Ad Maker v3.2 • Reel Animation Edition
     </div>
     <h1>Generate Viral UGC Video Ads</h1>
     <p class="subtitle">
-      3-Segment Hook · Body · CTA • Dual Engine (WaveSpeed &amp; OpenRouter Video) • Director Scene Planning
+      Local GPU &amp; Cloud AI • Instagram Reel Animations • Kinetic Captions • Film Grain • 3-Segment Hook · Body · CTA
     </p>
   </header>
 
@@ -40,6 +40,9 @@
       <input type="hidden" id="product_mode" name="product_mode" value="physical" />
       <input type="hidden" id="video_backend" name="video_backend" value="wavespeed" />
       <input type="hidden" id="avatar_url" name="avatar_url" value="" />
+      <input type="hidden" id="image_provider" name="image_provider" value="local" />
+      <input type="hidden" id="video_provider" name="video_provider" value="local" />
+      <input type="hidden" id="motion_style" name="motion_style" value="reel" />
 
       <!-- ── Product type toggle ─────────────────────────────────────────── -->
       <div class="section-title">1. Product Type</div>
@@ -171,7 +174,8 @@ ROI Infotech — 15+ Years | 649 Websites Designed (roiinfotech.com)
         <div class="form-group">
           <label for="openrouter_video_model">Select OpenRouter Video Model</label>
           <select id="openrouter_video_model" name="openrouter_video_model">
-            <option value="heygen/heygen-video-1" selected>HeyGen Video 1 (Recommended — Supports Custom Avatars &amp; Speaking Creator)</option>
+            <option value="heygen/avatar-iv" selected>HeyGen Avatar IV (Lip-syncs to YOUR cloned voice — Recommended)</option>
+            <option value="heygen/heygen-video-1">HeyGen Video 1 (Recommended — Supports Custom Avatars &amp; Speaking Creator)</option>
             <option value="kwaivgi/kling-video-o1">Kwai Kling Video O1 (Cinematic Physics &amp; Motion)</option>
             <option value="google/veo-3.1-fast">Google Veo 3.1 Fast (Cinematic Scenes — No Face Photos)</option>
             <option value="bytedance/seedance-2.5">ByteDance Seedance 2.5 (High Motion Dynamics)</option>
@@ -212,7 +216,31 @@ ROI Infotech — 15+ Years | 649 Websites Designed (roiinfotech.com)
       <div class="divider"></div>
 
       <!-- ── Voice & Audio settings ──────────────────────────────────────── -->
-      <div class="section-title">5. Voiceover &amp; Audio Cloning</div>
+      <div class="section-title">5. Voiceover Engine &amp; Audio Cloning</div>
+      <p class="hint" style="margin-bottom:12px;color:var(--text2)">
+        Choose your speech synthesis engine and optionally upload reference audio to clone your voice:
+      </p>
+
+      <div class="engine-cards" style="margin-bottom:16px;">
+        <div class="engine-card active" id="card-tts-voxcpm">
+          <div class="engine-badge">Default</div>
+          <div class="engine-icon">⚡</div>
+          <div class="engine-title">VoxCPM Voiceover</div>
+          <div class="engine-desc">
+            Expressive emotional speech synthesis (hook, explain, excited) with GPU-accelerated voice cloning.
+          </div>
+        </div>
+
+        <div class="engine-card" id="card-tts-bytedance">
+          <div class="engine-badge new">ByteDance AI</div>
+          <div class="engine-icon">🔊</div>
+          <div class="engine-title">ByteDance Seed Audio</div>
+          <div class="engine-desc">
+            High-fidelity OpenRouter neural voice engine with natural human cadence and zero-shot voice cloning.
+          </div>
+        </div>
+      </div>
+      <input type="hidden" id="tts_engine" name="tts_engine" value="voxcpm" />
 
       <div class="form-group">
         <label>Upload Reference Voice for Voice Cloning <em style="color:var(--text3)">(optional)</em></label>
@@ -231,32 +259,136 @@ ROI Infotech — 15+ Years | 649 Websites Designed (roiinfotech.com)
           </div>
           <button type="button" class="remove-preview" id="audio-remove" title="Remove">×</button>
         </div>
-        <p class="hint">If left empty, VoxCPM uses its default natural creator voice.</p>
+        <p class="hint" id="tts-hint">If left empty, VoxCPM uses its default natural creator voice.</p>
       </div>
 
-      <!-- ── Advanced settings ────────────────────────────────────────── -->
-      <div class="section-title" style="margin-top:20px;">Generation Options</div>
+      <!-- ── Image Generation Provider ──────────────────────────────────── -->
+      <div class="section-title" style="margin-top:20px;">6. 🖼️ Image Generation Provider</div>
+      <p class="hint" style="margin-bottom:12px;color:var(--text2)">
+        Powers avatar keyframes &amp; infographic B-roll start/end frames.
+        <span id="gpu-status-img" style="margin-left:8px;font-size:12px;">⏳ Checking GPU…</span>
+      </p>
 
-      <div class="form-row cols-2">
+      <div class="engine-cards" style="margin-bottom:0">
+        <div class="engine-card active" id="card-imgprovider-local">
+          <div class="engine-badge">Fast &amp; Free</div>
+          <div class="engine-icon">🖥️</div>
+          <div class="engine-title">Local GPU <span id="gpu-dot-img" class="gpu-status-dot">●</span></div>
+          <div class="engine-desc">Flux image model on local GPU server. No API cost. Instant generation.</div>
+        </div>
+        <div class="engine-card" id="card-imgprovider-cloud">
+          <div class="engine-badge new">Premium</div>
+          <div class="engine-icon">☁️</div>
+          <div class="engine-title">Cloud (OpenRouter)</div>
+          <div class="engine-desc">GPT-Image-2, Gemini Pro Image, FLUX 1.1 Pro — highest commercial quality.</div>
+        </div>
+      </div>
+
+      <!-- Local GPU Flux model selector -->
+      <div id="local-image-model-container" style="margin-top:12px;">
         <div class="form-group">
-          <label for="ugc_image_model">🖼️ Scene Image Model</label>
-          <select id="ugc_image_model" name="ugc_image_model">
-            <option value="google/gemini-2.5-flash-image">Gemini 2.5 Flash Image (Fast &amp; Realistic)</option>
-            <option value="openai/gpt-5-image-mini">GPT-5 Image Mini (OpenAI)</option>
-            <option value="google/gemini-3.1-flash-image">Gemini 3.1 Flash Image</option>
-            <option value="openai/gpt-5-image">GPT-5 Image (Highest detail)</option>
+          <label for="local_image_model">🖥️ Local Flux Model</label>
+          <select id="local_image_model" name="local_image_model">
+            <option value="flux-dev" selected>Flux Dev — Best quality</option>
+            <option value="flux-schnell">Flux Schnell — Fastest</option>
+            <option value="flux-1.1-pro">Flux 1.1 Pro — Premium</option>
           </select>
         </div>
-
+      </div>
+      <!-- Cloud image model selector -->
+      <div id="cloud-image-model-container" style="display:none;margin-top:12px;">
         <div class="form-group">
-          <label>✨ Visual Badges &amp; Overlays</label>
-          <div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);padding:10px 14px;border-radius:8px;font-size:12.5px;color:var(--text);display:flex;align-items:center;gap:8px;">
-            <span>💎</span>
-            <span><strong>Glassmorphism Icon Cards</strong> (Clean video, 0 burn-in subtitles)</span>
-          </div>
-          <input type="hidden" id="burn_captions" name="burn_captions" value="false" />
+          <label for="ugc_image_model">☁️ Cloud Image Model</label>
+          <select id="ugc_image_model" name="ugc_image_model">
+            <option value="openai/gpt-image-2" selected>GPT Image 2 (OpenAI) — Sharp text (Recommended)</option>
+            <option value="google/gemini-3-pro-image">Gemini 3 Pro Image — Highest quality</option>
+            <option value="google/gemini-3.1-flash-image">Gemini 3.1 Flash Image — Fast &amp; Sharp</option>
+            <option value="google/gemini-2.5-flash-image">Gemini 2.5 Flash Image</option>
+            <option value="black-forest-labs/flux-1.1-pro">FLUX 1.1 Pro — Photorealistic</option>
+            <option value="openai/gpt-5-image">GPT-5 Image — Detail mode</option>
+          </select>
+          <p class="hint">Powers avatar poses &amp; infographic keyframes.</p>
         </div>
       </div>
+
+      <div class="divider" style="margin:20px 0"></div>
+
+      <!-- ── B-Roll Video (I2V) Provider ───────────────────────────────────── -->
+      <div class="section-title">7. 🎞️ B-Roll Video Provider</div>
+      <p class="hint" style="margin-bottom:12px;color:var(--text2)">
+        Animates infographic keyframes into motion clips using image-to-video AI.
+        <span id="gpu-status-vid" style="margin-left:8px;font-size:12px;"></span>
+      </p>
+
+      <div class="engine-cards" style="margin-bottom:0">
+        <div class="engine-card active" id="card-vidprovider-local">
+          <div class="engine-badge">Fast &amp; Free</div>
+          <div class="engine-icon">🖥️</div>
+          <div class="engine-title">Local GPU <span id="gpu-dot-vid" class="gpu-status-dot">●</span></div>
+          <div class="engine-desc">LTX-Video 2.3 Distilled — 5–15s clips in ~60s. No API cost.</div>
+        </div>
+        <div class="engine-card" id="card-vidprovider-cloud">
+          <div class="engine-badge new">Premium</div>
+          <div class="engine-icon">☁️</div>
+          <div class="engine-title">Cloud (OpenRouter)</div>
+          <div class="engine-desc">Veo 3.1, Seedance 2.5, Kling — highest motion quality. API cost per clip.</div>
+        </div>
+      </div>
+
+      <!-- Local GPU LTX model selector -->
+      <div id="local-video-model-container" style="margin-top:12px;">
+        <div class="form-group">
+          <label for="local_video_model">🖥️ Local LTX Model</label>
+          <select id="local_video_model" name="local_video_model">
+            <option value="ltx23_distilled_q6" selected>LTX-Video 2.3 Distilled Q6 (Recommended)</option>
+            <option value="ltx21">LTX-Video 2.1 (Higher quality, slower)</option>
+          </select>
+        </div>
+      </div>
+      <!-- Cloud I2V model selector -->
+      <div id="cloud-video-model-container" style="display:none;margin-top:12px;">
+        <div class="form-group">
+          <label for="broll_video_model">☁️ Cloud I2V Model</label>
+          <select id="broll_video_model" name="broll_video_model">
+            <option value="bytedance/seedance-1-5-pro" selected>Seedance 1.5 Pro — Low cost (Recommended)</option>
+            <option value="google/veo-3.1-lite">Veo 3.1 Lite — Low cost</option>
+            <option value="google/veo-3.1-fast">Veo 3.1 Fast — Balanced</option>
+            <option value="google/veo-3.1">Veo 3.1 — Highest quality</option>
+            <option value="bytedance/seedance-2.5">Seedance 2.5 — High quality</option>
+            <option value="kwaivgi/kling-video-o1">Kling Video O1 — Cinematic</option>
+          </select>
+          <p class="hint">Animates Start/End keyframe pairs. Falls back automatically on failure.</p>
+        </div>
+      </div>
+
+      <div class="divider" style="margin:20px 0"></div>
+
+      <!-- ── Animation Style ───────────────────────────────────────────────── -->
+      <div class="section-title">8. 🎬 Animation Style</div>
+      <p class="hint" style="margin-bottom:12px;color:var(--text2)">Choose the visual treatment applied to your final video:</p>
+
+      <div class="engine-cards">
+        <div class="engine-card active" id="card-style-reel" onclick="setMotionStyle('reel')">
+          <div class="engine-badge">Viral</div>
+          <div class="engine-icon">🎭</div>
+          <div class="engine-title">Reel Style</div>
+          <div class="engine-desc">Kinetic yellow word highlights, film grain, comic burst stickers, avatar punch-zoom.</div>
+        </div>
+        <div class="engine-card" id="card-style-clean" onclick="setMotionStyle('clean')">
+          <div class="engine-badge">Pro</div>
+          <div class="engine-icon">💎</div>
+          <div class="engine-title">Clean Style</div>
+          <div class="engine-desc">Static white captions only. No grain, no stickers. Premium minimal look.</div>
+        </div>
+        <div class="engine-card" id="card-style-minimal" onclick="setMotionStyle('minimal')">
+          <div class="engine-badge">Simple</div>
+          <div class="engine-icon">⬜</div>
+          <div class="engine-title">No Overlays</div>
+          <div class="engine-desc">Raw video output with glassmorphic icon badges only. No caption burn-in.</div>
+        </div>
+      </div>
+
+      <input type="hidden" id="burn_captions" name="burn_captions" value="false" />
 
       <div class="divider"></div>
 

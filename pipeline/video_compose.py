@@ -287,10 +287,11 @@ async def compose_final_video(
     burn_captions: bool = False,
     audio_urls: Optional[list[str]] = None,
     brand_color: Optional[tuple[int, int, int]] = None,
+    motion_style: str = "reel",
 ) -> str:
     """
     Download clips, stitch them together into cinematic hybrid video,
-    apply glassmorphism keyword icon cards, and normalize audio.
+    apply glassmorphism keyword icon cards, kinetic captions, film grain, and comic bursts.
     """
     from pipeline.icon_overlay import plan_segment_icon_overlays, build_ffmpeg_icon_filter
 
@@ -336,14 +337,15 @@ async def compose_final_video(
 
         current_video = concat_out
 
-        # 4. Apply Glassmorphism Keyword Icon Cards
+        # Measure actual durations of concatenated parts
+        durations = [_get_duration(p) for p in encoded_paths]
         if segments:
-            # Measure actual durations of concatenated parts
-            durations = [_get_duration(p) for p in encoded_paths]
             for idx, dur in enumerate(durations):
                 if idx < len(segments):
                     segments[idx]["audio_duration_sec"] = dur
 
+        # 4. Apply Glassmorphism Keyword Icon Cards
+        if segments:
             icon_overlays = plan_segment_icon_overlays(
                 segments, tmp_path / "icons", brand_color=brand_color
             )
@@ -369,21 +371,62 @@ async def compose_final_video(
                 if res.returncode == 0:
                     current_video = icon_out
 
-        # 5. Optional subtitles (legacy fallback, default False)
-        if burn_captions and segments:
-            durations = [_get_duration(p) for p in encoded_paths]
-            srt_content = _build_srt(segments, durations)
-            srt_path = tmp_path / "captions.srt"
-            srt_path.write_text(srt_content, encoding="utf-8")
+        # 5. Animation Overlays (Reel / Clean / Minimal)
+        if motion_style == "reel":
+            from pipeline.motion_overlay import (
+                ensure_overlay_assets, build_static_kinetic_ass,
+                burn_kinetic_captions, apply_film_grain, apply_comic_overlay
+            )
+            ensure_overlay_assets()
 
-            captioned_out = tmp_path / "captioned.mp4"
+            # 5a. Film grain & retro 35mm matte texture
+            grain_out = tmp_path / "with_grain.mp4"
             try:
                 await asyncio.get_event_loop().run_in_executor(
-                    None, _burn_captions, current_video, srt_path, captioned_out
+                    None, apply_film_grain, current_video, grain_out, 0.12
                 )
-                current_video = captioned_out
-            except RuntimeError:
-                pass
+                current_video = grain_out
+            except Exception as e:
+                print(f"[Compose] Film grain notice: {e}")
+
+            # 5b. Comic burst sticker overlay at scene transitions / key beats
+            burst_out = tmp_path / "with_burst.mp4"
+            try:
+                await asyncio.get_event_loop().run_in_executor(
+                    None, apply_comic_overlay, current_video, burst_out, 0.3, 1.5
+                )
+                current_video = burst_out
+            except Exception as e:
+                print(f"[Compose] Comic burst notice: {e}")
+
+            # 5c. Kinetic karaoke subtitles (yellow highlight on active word)
+            if segments:
+                ass_content = build_static_kinetic_ass(segments, durations)
+                kinetic_out = tmp_path / "kinetic_captions.mp4"
+                try:
+                    await asyncio.get_event_loop().run_in_executor(
+                        None, burn_kinetic_captions, current_video, kinetic_out, ass_content
+                    )
+                    current_video = kinetic_out
+                except Exception as e:
+                    print(f"[Compose] Kinetic caption notice: {e}")
+
+        elif motion_style == "clean":
+            # Clean style: static white subtitles if burn_captions requested
+            if burn_captions and segments:
+                srt_content = _build_srt(segments, durations)
+                srt_path = tmp_path / "captions.srt"
+                srt_path.write_text(srt_content, encoding="utf-8")
+
+                captioned_out = tmp_path / "captioned.mp4"
+                try:
+                    await asyncio.get_event_loop().run_in_executor(
+                        None, _burn_captions, current_video, srt_path, captioned_out
+                    )
+                    current_video = captioned_out
+                except RuntimeError:
+                    pass
+        # minimal style: no extra burned captions or grain
 
         # 6. Save final video to uploads/
         final_name = f"final_{job_id}.mp4"
@@ -400,6 +443,7 @@ async def save_single_clip(
     burn_captions: bool = False,
     audio_urls: Optional[list[str]] = None,
     brand_color: Optional[tuple[int, int, int]] = None,
+    motion_style: str = "reel",
 ) -> str:
     return await compose_final_video(
         clip_urls=[clip_url],
@@ -408,4 +452,6 @@ async def save_single_clip(
         burn_captions=burn_captions,
         audio_urls=audio_urls,
         brand_color=brand_color,
+        motion_style=motion_style,
     )
+

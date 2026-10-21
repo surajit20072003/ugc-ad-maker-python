@@ -27,6 +27,10 @@ load_dotenv()
 WAVESPEED_API_KEY  = os.getenv("WAVESPEED_API_KEY", "")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 SERVER_URL         = os.getenv("SERVER_URL", "http://localhost:8765").rstrip("/")
+# OpenRouter only accepts HTTPS URLs for audio inputs; set this to a public HTTPS base that serves ./uploads at /uploads
+PUBLIC_HTTPS_URL   = os.getenv("PUBLIC_HTTPS_URL", "").rstrip("/")
+AVATAR_RESOLUTION  = os.getenv("AVATAR_RESOLUTION", "1080p")
+AVATAR_EXPRESSIVENESS = os.getenv("AVATAR_EXPRESSIVENESS", "low")
 
 UPLOAD_DIR = Path(__file__).parent.parent / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
@@ -59,42 +63,22 @@ def _or_headers() -> dict:
 
 # ─── Per-segment motion prompts (WaveSpeed & AI Video) ─────────────────────────
 
+REALISM_CORE = (
+    "Real person filming a casual smartphone video, speaking naturally and directly to camera. "
+    "Calm, subtle facial expressions only: soft natural eyebrow movement, normal blinks, small relaxed head nods, "
+    "lips moving naturally in sync with the speech. Mostly still upper body and shoulders. "
+    "At most one small, relaxed hand movement at chest level. Natural conversational delivery. "
+    "NO exaggerated emotion, NO wide eyes, NO big smile, NO pointing, NO head shaking, NO dramatic gestures, "
+    "NO fast movement. Stable framing like a propped-up phone. Realistic skin, no beauty filter."
+)
+
 SEGMENT_MOTION_PROMPTS = {
-    "hook": (
-        "High-energy UGC creator speaking urgently and directly to camera: "
-        "leans forward with intensity, raises one hand and points finger toward viewer for emphasis, "
-        "expressive wide eyes showing shock or excitement, head shakes slightly for emphasis, "
-        "other hand gestures from chest outward, shoulders animated, "
-        "authentic handheld smartphone camera feel with subtle natural shake, "
-        "real person not a spokesperson — raw candid energy"
-    ),
-    "body": (
-        "Authentic UGC creator mid-story, conversational and warm: "
-        "both hands visible and actively gesturing — one hand holds or touches product at chest level, "
-        "other hand opens and closes expressively while talking, "
-        "head nods naturally at key points, leans slightly forward when making key points, "
-        "shoulders relaxed but animated, eyes bright with genuine enthusiasm, "
-        "natural posture shifts and micro-movements, "
-        "feels like watching a friend tell a story over FaceTime"
-    ),
-    "cta": (
-        "Warm confident UGC creator giving final recommendation directly to camera: "
-        "genuine relaxed smile throughout, open palm facing camera or thumbs-up gesture, "
-        "slight head tilt and nod of approval, shoulders back, relaxed confident posture, "
-        "direct eye contact with camera lens, "
-        "energy is friendly and encouraging like recommending something to a close friend, "
-        "authentic not salesy — natural closing energy"
-    ),
+    "hook": REALISM_CORE + " Tone: calm and direct, like telling a friend something you just noticed.",
+    "body": REALISM_CORE + " If a product is in hand it is held still and naturally at chest level.",
+    "cta": REALISM_CORE + " Tone: relaxed and sincere; a slight, gentle smile only where the words fit.",
 }
 
-DEFAULT_MOTION_PROMPT = (
-    "Authentic UGC creator speaking naturally to camera with dynamic body language: "
-    "expressive hand gestures at chest and shoulder level while talking, "
-    "natural head movements — nods, slight tilts, leaning in for emphasis, "
-    "shoulders and upper body animated with genuine energy, "
-    "one hand periodically holds or references product, "
-    "warm relatable expression, direct eye contact with camera"
-)
+DEFAULT_MOTION_PROMPT = REALISM_CORE
 
 
 # ─── Image URL to Base64 Data URL helper ─────────────────────────────────────
@@ -112,7 +96,8 @@ async def _image_to_data_url(image_url: str) -> str:
     local_path = UPLOAD_DIR / filename
     if local_path.exists():
         data = local_path.read_bytes()
-        mime = "image/png" if filename.lower().endswith(".png") else "image/jpeg"
+        from pipeline.upload import sniff_image_mime
+        mime = sniff_image_mime(data)
         b64 = base64.b64encode(data).decode("utf-8")
         return f"data:{mime};base64,{b64}"
 
@@ -120,7 +105,8 @@ async def _image_to_data_url(image_url: str) -> str:
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.get(image_url)
         r.raise_for_status()
-        mime = r.headers.get("content-type", "image/jpeg").split(";")[0]
+        from pipeline.upload import sniff_image_mime
+        mime = sniff_image_mime(r.content)
         b64 = base64.b64encode(r.content).decode("utf-8")
         return f"data:{mime};base64,{b64}"
 
@@ -155,14 +141,22 @@ async def generate_video_openrouter(
 
         # Expression & tone style per segment for natural human UGC feel
         if segment == "hook":
-            expression = "captivating and confident, direct eye contact with camera, authentic smile"
+            expression = "calm, direct eye contact with camera, subtle natural expression"
         elif segment == "cta":
-            expression = "warm, friendly, enthusiastic and trustworthy recommendation"
+            expression = "relaxed, sincere and trustworthy, a slight gentle smile"
         else:
-            expression = "natural, engaging, conversational micro-expressions and nods"
+            expression = "natural, relaxed, conversational, subtle micro-expressions"
 
         # Realistic prompt designed for HeyGen avatar speech synthesis
-        combined_prompt = f"Natural UGC creator, {expression}, speaking directly to camera: \"{spoken}\""
+        calm_style = (
+            "A real, ordinary person recording a casual phone video, calm and natural. Relaxed face, subtle expressions, "
+            "normal blinks, small head nods, still shoulders, at most one small hand movement. "
+            "No exaggerated emotion, no wide eyes, no big smile, no pointing, no dramatic gestures. "
+            f"Mood: {expression}. Stable framing, realistic skin. "
+        )
+        speech_part = f'Speaking directly to camera: "{spoken}"'
+        # the spoken line must never be truncated by the 900-char cap, so trim the style text instead
+        combined_prompt = calm_style[: max(0, 900 - len(speech_part))] + speech_part
 
         # Calculate exact duration: human speech pace in UGC is ~2.0 to 2.2 words/sec
         words_count = len(spoken.split())
@@ -173,7 +167,7 @@ async def generate_video_openrouter(
     else:
         # Generative diffusion video models (Veo, Kling, Wan, Seedance) need visual motion prompts
         motion = SEGMENT_MOTION_PROMPTS.get(segment, DEFAULT_MOTION_PROMPT)
-        combined_prompt = f"{prompt}. {motion}" if prompt else motion
+        combined_prompt = f"{motion} Scene: {prompt[:200]}" if prompt else motion
         words_count = len((prompt or "").split())
 
         if "kling" in model.lower():
@@ -199,8 +193,15 @@ async def generate_video_openrouter(
     if on_log:
         on_log(f"Submitting {segment.upper()} to OpenRouter ({model}, {duration}s clip)...")
 
+    plain_payload = payload
+    if "heygen" in model.lower():
+        # HeyGen's own prompt enhancement exaggerates expressions; keep our calm prompt as written
+        payload = {**payload, "provider": {"options": {"heygen": {"parameters": {"prompt_enhancement": False}}}}}
+
     async with httpx.AsyncClient(timeout=60) as client:
         resp = await client.post(OPENROUTER_VIDEOS_URL, headers=_or_headers(), json=payload)
+        if resp.status_code == 400 and payload is not plain_payload:
+            resp = await client.post(OPENROUTER_VIDEOS_URL, headers=_or_headers(), json=plain_payload)
         if resp.status_code not in (200, 202):
             err_text = resp.text
             if any(k in err_text.lower() for k in ["usage guidelines", "privacyinformation", "real person", "sensitivecontent"]):
@@ -282,6 +283,99 @@ async def generate_video_openrouter(
                 raise RuntimeError(f"OpenRouter video generation failed: {err}")
 
     raise TimeoutError(f"OpenRouter video generation timed out after {max_wait}s for job {job_id}")
+
+
+# ─── Engine A2: HeyGem Avatar IV (audio-driven, uses OUR voiceover) ──────────
+
+def _public_https_base() -> str:
+    if PUBLIC_HTTPS_URL:
+        return PUBLIC_HTTPS_URL
+    f = Path(__file__).parent.parent / "public_https_url.txt"
+    try:
+        return f.read_text().strip().rstrip("/")
+    except OSError:
+        return ""
+
+
+def _https_audio_url(audio_url: str) -> str:
+    filename = audio_url.split("/")[-1].split("?")[0]
+    base = _public_https_base()
+    if base:
+        return f"{base}/uploads/{filename}"
+    if audio_url.startswith("https://"):
+        return audio_url
+    raise RuntimeError(
+        "HeyGen Avatar IV needs an HTTPS link to the voiceover. Set PUBLIC_HTTPS_URL in .env, or put the "
+        "public HTTPS base URL in public_https_url.txt (project root)."
+    )
+
+
+async def generate_video_avatar_iv(
+    image_url: str,
+    audio_url: str,
+    segment: str = "body",
+    resolution: str = "",
+    poll_interval: int = 6,
+    max_wait: int = 900,
+    on_log: Optional[Callable[[str], None]] = None,
+) -> str:
+    """HeyGen Avatar IV: animates the avatar photo and lip-syncs it to OUR voiceover WAV (voice stays ours)."""
+    https_audio = _https_audio_url(audio_url)
+    data_url = await _image_to_data_url(image_url)
+    payload = {
+        "model": "heygen/avatar-iv",
+        "prompt": SEGMENT_MOTION_PROMPTS.get(segment, DEFAULT_MOTION_PROMPT)[:900],
+        "aspect_ratio": "9:16",
+        "resolution": resolution or AVATAR_RESOLUTION,
+        "input_references": [
+            {"type": "image_url", "image_url": {"url": data_url}},
+            {"type": "audio_url", "audio_url": {"url": https_audio}},
+        ],
+    }
+    if on_log:
+        on_log(f"Submitting {segment.upper()} to HeyGen Avatar IV with your voiceover audio...")
+
+    heygen_params = {"motion_prompt": REALISM_CORE[:600]}
+    if AVATAR_EXPRESSIVENESS:
+        heygen_params["expressiveness"] = AVATAR_EXPRESSIVENESS
+    tuned = {**payload, "provider": {"options": {"heygen": {"parameters": heygen_params}}}}
+
+    async with httpx.AsyncClient(timeout=60) as client:
+        resp = await client.post(OPENROUTER_VIDEOS_URL, headers=_or_headers(), json=tuned)
+        if resp.status_code == 400:
+            if on_log:
+                on_log(f"Avatar IV rejected expressiveness options ({resp.text[:160]}); retrying with defaults.")
+            resp = await client.post(OPENROUTER_VIDEOS_URL, headers=_or_headers(), json=payload)
+        if resp.status_code not in (200, 202):
+            raise RuntimeError(f"Avatar IV submission failed ({resp.status_code}): {resp.text[:400]}")
+        res = resp.json()
+        job_id = res.get("id")
+        polling_url = res.get("polling_url") or f"{OPENROUTER_VIDEOS_URL}/{job_id}"
+        elapsed = 0
+        while elapsed < max_wait:
+            await asyncio.sleep(poll_interval)
+            elapsed += poll_interval
+            pr = await client.get(polling_url, headers=_or_headers())
+            if pr.status_code != 200:
+                continue
+            obj = pr.json()
+            status = obj.get("status")
+            if on_log and elapsed % 30 == 0:
+                on_log(f"Avatar IV [{segment.upper()}]: {status} ({elapsed}s)...")
+            if status == "completed":
+                urls = obj.get("unsigned_urls", [])
+                if not urls:
+                    raise RuntimeError(f"Avatar IV completed without a URL: {obj}")
+                dl = await client.get(urls[0], headers=_or_headers())
+                dl.raise_for_status()
+                name = f"avatar_iv_{job_id}.mp4"
+                (UPLOAD_DIR / name).write_bytes(dl.content)
+                if on_log:
+                    on_log(f"Avatar IV [{segment.upper()}]: clip saved ({len(dl.content) // 1024} KB).")
+                return f"{SERVER_URL}/uploads/{name}"
+            if status == "failed":
+                raise RuntimeError(f"Avatar IV generation failed: {obj.get('error', 'unknown')}")
+    raise TimeoutError(f"Avatar IV timed out after {max_wait}s for job {job_id}")
 
 
 # ─── Engine B: WaveSpeed Lip-Sync (Talking Avatar) ───────────────────────────
@@ -397,6 +491,18 @@ async def generate_video(
     Unified entrypoint for video clip generation.
     Supports both WaveSpeed lip-sync and OpenRouter AI video engines.
     """
+    if backend == "openrouter" and openrouter_model.lower().startswith("heygen/") and audio_url:
+        try:
+            return await generate_video_avatar_iv(
+                image_url=image_url, audio_url=audio_url, segment=segment, on_log=on_log,
+            )
+        except Exception as e:
+            if on_log:
+                on_log(f"⚠️ VOICE WARNING: Avatar IV with your voiceover failed ({e}). "
+                       "Falling back to HeyGen Video 1, whose own voice will NOT match your cloned voice.")
+        if openrouter_model.lower() == "heygen/avatar-iv":
+            openrouter_model = "heygen/heygen-video-1"
+
     if backend == "openrouter":
         return await generate_video_openrouter(
             image_url=image_url,

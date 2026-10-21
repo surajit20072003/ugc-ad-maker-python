@@ -1,0 +1,30 @@
+nohup: ignoring input
+INFO:     Started server process [2969396]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8765 (Press CTRL+C to quit)
+INFO:     127.0.0.1:48392 - "GET /api/gpu-status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42118 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47718 - "GET /api/gpu-status HTTP/1.1" 200 OK
+INFO:     42.108.85.183:2551 - "GET / HTTP/1.1" 200 OK
+INFO:     42.108.85.183:2524 - "GET /static/style.css HTTP/1.1" 200 OK
+INFO:     42.108.85.183:2499 - "GET /static/app.js HTTP/1.1" 200 OK
+INFO:     42.108.85.183:2524 - "GET /result/30917362-6a23-4b37-99d7-705420640c61 HTTP/1.1" 200 OK
+INFO:     42.108.85.183:2499 - "GET /api/gpu-status HTTP/1.1" 200 OK
+INFO:     42.108.85.183:2524 - "GET /static/uploads/final_30917362-6a23-4b37-99d7-705420640c61.mp4 HTTP/1.1" 404 Not Found
+INFO:     42.108.85.183:2556 - "GET /favicon.ico HTTP/1.1" 404 Not Found
+INFO:     42.108.85.183:12132 - "POST /upload/avatar HTTP/1.1" 200 OK
+INFO:     42.108.85.183:2514 - "POST /generate HTTP/1.1" 200 OK
+[06:48:24] [e3546742] [ANALYZE] (5%): Analyzing product, branding & colors (Claude Vision)...
+INFO:     42.108.85.183:2520 - "GET /status/e3546742-695e-481c-9d79-19a3b029fd30 HTTP/1.1" 200 OK
+[06:48:28] [e3546742] [SCRIPT] (12%): Parsing your custom screenplay & scenes...
+[06:48:28] [e3546742] [SCRIPT] (16%): Screenplay locked: 5 scenes ready (hook, scene_2, scene_3, scene_4, cta)
+[06:48:28] [e3546742] [TTS] (20%): 🎙️ [Audio-First] Generating voiceovers (ByteDance Seed Audio) for 5 scenes...
+[06:48:28] [e3546742] [TTS] (20%): 🎙️ [Scene 1/5 - AVATAR] Synthesizing speech (ByteDance Seed Audio)...
+[06:48:54] [e3546742] [TTS] (23%): ✅ [Scene 1/5] Speech ready: 14.63s (685 KB)
+[06:48:55] [e3546742] [TTS] (23%): 🎙️ [Scene 2/5 - B_ROLL] Synthesizing speech (ByteDance Seed Audio)...
+[06:49:45] [e3546742] [ERROR] (23%): Error: 
+INFO:     42.108.85.183:2508 - "GET /result/e3546742-695e-481c-9d79-19a3b029fd30 HTTP/1.1" 200 OK
+INFO:     42.108.85.183:2508 - "GET /result/e3546742-695e-481c-9d79-19a3b029fd30 HTTP/1.1" 200 OK
+INFO:     42.108.85.183:2508 - "GET /result/e3546742-695e-481c-9d79-19a3b029fd30 HTTP/1.1" 200 OK
+INFO:     42.108.85.183:2508 - "GET /result/e3546742-695e-481c-9d79-19a3b029fd30 HTTP/1.1" 200 OK

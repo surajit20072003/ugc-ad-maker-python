@@ -14,7 +14,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
-UPLOAD_DIR = Path("uploads")
+UPLOAD_DIR = Path(__file__).parent.parent / "uploads"
 
 
 def get_media_duration(file_path: str | Path) -> float:
@@ -145,4 +145,57 @@ def standardize_avatar_clip(
     if res.returncode != 0:
         raise RuntimeError(f"FFmpeg avatar standardization failed:\n{res.stderr}")
 
+    return out_p
+
+
+def compose_beat_scene(
+    clips: list,
+    audio_path: str | Path,
+    output_path: str | Path,
+    total_duration: float,
+    width: int = 720,
+    height: int = 1280,
+) -> Path:
+    """
+    Fit several beat clips [(path, target_seconds), ...] to the voiceover and mux the scene WAV.
+    Each clip is sped up (up to 1.8x, so the whole start->end animation plays) or slowed (up to 15%) to hit its target; beyond that it is trimmed or end-frame padded.
+    """
+    out_p = Path(output_path)
+    out_p.parent.mkdir(parents=True, exist_ok=True)
+
+    cmd = ["ffmpeg", "-y"]
+    parts = []
+    for i, (path, target) in enumerate(clips):
+        cmd += ["-i", str(path)]
+        src = get_media_duration(path)
+        target = max(0.5, float(target))
+        chain = (
+            f"[{i}:v]scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,"
+            f"crop={width}:{height},setsar=1,fps=30"
+        )
+        ratio = target / src if src > 0 else 1.0
+        if 0.55 <= ratio <= 1.15:
+            chain += f",setpts=PTS*{ratio:.5f}"
+        elif ratio > 1.15:
+            stretched = src * 1.15
+            chain += f",setpts=PTS*1.15,tpad=stop_mode=clone:stop_duration={target - stretched + 0.2:.3f}"
+        chain += f",trim=duration={target:.3f},setpts=PTS-STARTPTS,format=yuv420p[v{i}]"
+        parts.append(chain)
+
+    n = len(clips)
+    concat_in = "".join(f"[v{i}]" for i in range(n))
+    filt = ";".join(parts) + f";{concat_in}concat=n={n}:v=1:a=0[v]"
+    cmd += ["-i", str(audio_path)]
+    cmd += [
+        "-filter_complex", filt,
+        "-map", "[v]", "-map", f"{n}:a",
+        "-c:v", "libx264", "-preset", "medium", "-crf", "17",
+        "-c:a", "aac", "-b:a", "192k",
+        "-t", f"{total_duration:.3f}",
+        "-movflags", "+faststart",
+        str(out_p),
+    ]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    if res.returncode != 0:
+        raise RuntimeError(f"FFmpeg beat scene composition failed:\n{res.stderr[-800:]}")
     return out_p

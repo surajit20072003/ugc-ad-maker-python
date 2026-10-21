@@ -28,6 +28,17 @@ UPLOAD_DIR = Path(__file__).parent.parent / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
 
 
+def sniff_image_mime(data: bytes) -> str:
+    """Real image type from magic bytes (file extensions here can lie)."""
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if data[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return "image/jpeg"
+
+
 async def upload_audio_wav(wav_bytes: bytes, job_id: str = "") -> str:
     """
     Save WAV bytes locally and return a public HTTP URL.
@@ -47,7 +58,8 @@ async def upload_image_bytes(image_bytes: bytes, job_id: str = "") -> str:
     Save image bytes locally and return a public HTTP URL.
     Used when OpenRouter returns base64 image data.
     """
-    filename = f"image_{job_id or int(time.time())}.jpg"
+    ext = {"image/png": "png", "image/webp": "webp"}.get(sniff_image_mime(image_bytes), "jpg")
+    filename = f"image_{job_id or int(time.time())}.{ext}"
     filepath = UPLOAD_DIR / filename
 
     async with aiofiles.open(filepath, "wb") as f:

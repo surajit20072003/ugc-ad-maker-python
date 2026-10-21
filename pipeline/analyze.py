@@ -174,12 +174,12 @@ async def analyze_software_product(product_name: str, product_benefit: str) -> d
 def _default_character_profile(gender: str = "unisex", is_software: bool = False) -> dict:
     if is_software:
         return {
-            "description": "relatable 26-year-old creator with natural shoulder-length hair and engaged, friendly expression",
+            "description": "relatable 26-year-old creator with natural shoulder-length hair and a calm, friendly expression",
             "attire": "casual neutral ribbed crewneck sweater",
             "setting": "clean contemporary home office with laptop partially visible on desk, soft window light",
         }
     return {
-        "description": "candid, natural 25-year-old creator with warm expressive eyes and effortless hairstyle",
+        "description": "candid, natural 25-year-old creator with calm eyes, natural skin and effortless hairstyle",
         "attire": "casual comfortable oversized neutral cotton shirt",
         "setting": "brightly lit home bedroom vanity with soft natural daylight, cozy aesthetic",
     }
