@@ -47,7 +47,7 @@ def build_kinetic_ass(
     Args:
         word_timestamps: list of (word, start_sec, end_sec)
         total_duration:  total video duration in seconds
-        words_per_line:  how many words to show at once
+        words_per_line:  how many words to show at once (default 3 for punchy UGC style)
 
     Returns:
         ASS file content as string
@@ -62,8 +62,8 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: UGC,Arial Black,34,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3.0,1.5,2,40,40,60,1
-Style: UGCActive,Arial Black,34,&H0000CCFF,&H000000FF,&H00000000,&H00000000,-1,0,0,0,108,108,0,0,1,3.5,1.5,2,40,40,60,1
+Style: UGC,Arial Black,40,&H00FFFFFF,&H000000FF,&H00000000,&H99000000,-1,0,0,0,100,100,0.5,0,1,4.5,2.0,2,40,40,110,1
+Style: UGCActive,Arial Black,40,&H0000FFFF,&H000000FF,&H00000000,&H00000000,-1,0,0,0,112,112,0.5,0,1,5.0,2.0,2,40,40,110,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -88,7 +88,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             for j, (word, _, _) in enumerate(chunk):
                 if j == active_idx:
                     # Yellow highlight + scale-up
-                    parts.append(r"{\c&H0000CCFF&\fscx108\fscy108}" + word.upper() + r"{\r}")
+                    parts.append(r"{\c&H0000FFFF&\fscx112\fscy112}" + word.upper() + r"{\r}")
                 else:
                     parts.append(word.upper())
             text = " ".join(parts)
@@ -108,6 +108,7 @@ def build_static_kinetic_ass(
     """
     Build kinetic ASS from segment text + clip durations (fallback when no word timestamps).
     Distributes words evenly across clip duration.
+    3 words per line = punchy TikTok/Reels-style captions.
     """
     header = """\
 [Script Info]
@@ -119,8 +120,8 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: UGC,Arial Black,34,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3.0,1.5,2,40,40,60,1
-Style: UGCActive,Arial Black,34,&H0000CCFF,&H000000FF,&H00000000,&H00000000,-1,0,0,0,108,108,0,0,1,3.5,1.5,2,40,40,60,1
+Style: UGC,Arial Black,40,&H00FFFFFF,&H000000FF,&H00000000,&H99000000,-1,0,0,0,100,100,0.5,0,1,4.5,2.0,2,40,40,110,1
+Style: UGCActive,Arial Black,40,&H0000FFFF,&H000000FF,&H00000000,&H00000000,-1,0,0,0,112,112,0.5,0,1,5.0,2.0,2,40,40,110,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -150,7 +151,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 parts = []
                 for j, word in enumerate(chunk):
                     if j == active_idx:
-                        parts.append(r"{\c&H0000CCFF&\fscx108\fscy108}" + word.upper() + r"{\r}")
+                        parts.append(r"{\c&H0000FFFF&\fscx112\fscy112}" + word.upper() + r"{\r}")
                     else:
                         parts.append(word.upper())
                 text = " ".join(parts)

@@ -29,12 +29,14 @@ softwareBtn.addEventListener('click', () => setMode('software'));
 // ─── Video Engine Selection ───────────────────────────────────────────────────
 const cardWavespeed     = document.getElementById('card-engine-wavespeed');
 const cardOpenrouter    = document.getElementById('card-engine-openrouter');
+const cardScenes        = document.getElementById('card-engine-scenes');
 const videoBackendInput = document.getElementById('video_backend');
 const openrouterModelContainer = document.getElementById('openrouter-model-container');
 
 cardWavespeed.addEventListener('click', () => {
   cardWavespeed.classList.add('active');
   cardOpenrouter.classList.remove('active');
+  cardScenes.classList.remove('active');
   videoBackendInput.value = 'wavespeed';
   openrouterModelContainer.style.display = 'none';
 });
@@ -42,9 +44,74 @@ cardWavespeed.addEventListener('click', () => {
 cardOpenrouter.addEventListener('click', () => {
   cardOpenrouter.classList.add('active');
   cardWavespeed.classList.remove('active');
+  cardScenes.classList.remove('active');
   videoBackendInput.value = 'openrouter';
   openrouterModelContainer.style.display = '';
 });
+
+cardScenes.addEventListener('click', () => {
+  cardScenes.classList.add('active');
+  cardWavespeed.classList.remove('active');
+  cardOpenrouter.classList.remove('active');
+  videoBackendInput.value = 'heygen_scenes';
+  openrouterModelContainer.style.display = 'none';
+  applyEngineVisibility();
+});
+cardWavespeed.addEventListener('click', applyEngineVisibility);
+cardOpenrouter.addEventListener('click', applyEngineVisibility);
+
+// Dynamic Scenes (HeyGen) speaks and renders its own video: hide the settings it does not use
+// (5 voiceover engine, 7 B-roll provider, 8 animation style) and relabel what it still uses.
+function applyEngineVisibility() {
+  const scenes = videoBackendInput.value === 'heygen_scenes';
+  const titles = [...document.querySelectorAll('#ugc-form .section-title')];
+  const byNum = (n) => titles.find((t) => t.textContent.trim().startsWith(n + '.'));
+  const toggleRange = (from, until) => {
+    for (let el = from; el && el !== until; el = el.nextElementSibling) {
+      el.classList.toggle('scene-hidden', scenes);
+    }
+  };
+  // 5 voiceover engine, 6 image provider, 7 B-roll provider, 8 animation style
+  toggleRange(byNum(5), document.getElementById('burn_captions'));
+  document.getElementById('scene-voice-container').style.display = scenes ? '' : 'none';
+  document.getElementById('scene-language-container').style.display = scenes ? '' : 'none';
+
+  const t4 = byNum(4);
+  if (t4) {
+    t4.dataset.orig = t4.dataset.orig || t4.textContent;
+    t4.textContent = scenes ? '4. Character Image (reference for every shot — recommended)' : t4.dataset.orig;
+  }
+}
+applyEngineVisibility();
+
+// Language buttons: auto follows the script; an explicit choice also translates a script in another language
+const sceneLangCards = document.querySelectorAll('#scene-lang-cards .engine-card');
+const sceneLangInput = document.getElementById('scene_language');
+const sceneLangHint  = document.getElementById('scene-lang-hint');
+const SCENE_LANG_HINTS = {
+  auto:     'Auto: an English script is spoken in English, a Hindi script in Hindi. With no script the story is written in English.',
+  english:  'Spoken in English. A script in another language is translated faithfully.',
+  hinglish: 'Hindi in Devanagari with common English words. An English script is translated faithfully.',
+  hindi:    'Spoken in Hindi. An English script is translated faithfully.',
+};
+sceneLangCards.forEach((card) => card.addEventListener('click', () => {
+  sceneLangCards.forEach((c) => c.classList.toggle('active', c === card));
+  sceneLangInput.value = card.dataset.lang;
+  sceneLangHint.textContent = SCENE_LANG_HINTS[card.dataset.lang];
+}));
+sceneLangHint.textContent = SCENE_LANG_HINTS.auto;
+
+// Voice picker: the chosen HeyGen voice_id (or a pasted custom one) is posted as scene_voice_id
+const sceneVoiceSelect = document.getElementById('scene_voice_select');
+const sceneVoiceCustom = document.getElementById('scene_voice_custom');
+const sceneVoiceInput  = document.getElementById('scene_voice_id');
+function syncSceneVoice() {
+  const custom = sceneVoiceSelect.value === '__custom__';
+  sceneVoiceCustom.style.display = custom ? '' : 'none';
+  sceneVoiceInput.value = custom ? sceneVoiceCustom.value.trim() : sceneVoiceSelect.value;
+}
+sceneVoiceSelect.addEventListener('change', syncSceneVoice);
+sceneVoiceCustom.addEventListener('input', syncSceneVoice);
 
 // ─── Voice Engine Selection ───────────────────────────────────────────────────
 const cardTtsVoxcpm    = document.getElementById('card-tts-voxcpm');

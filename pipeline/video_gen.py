@@ -64,18 +64,60 @@ def _or_headers() -> dict:
 # ─── Per-segment motion prompts (WaveSpeed & AI Video) ─────────────────────────
 
 REALISM_CORE = (
-    "Real person filming a casual smartphone video, speaking naturally and directly to camera. "
-    "Calm, subtle facial expressions only: soft natural eyebrow movement, normal blinks, small relaxed head nods, "
-    "lips moving naturally in sync with the speech. Mostly still upper body and shoulders. "
-    "At most one small, relaxed hand movement at chest level. Natural conversational delivery. "
-    "NO exaggerated emotion, NO wide eyes, NO big smile, NO pointing, NO head shaking, NO dramatic gestures, "
-    "NO fast movement. Stable framing like a propped-up phone. Realistic skin, no beauty filter."
+    "Ultra-photorealistic UGC creator video, shot on a modern smartphone propped at eye height. "
+    "The person is sitting naturally inside a real, softly lit indoor room — warm ambient light "
+    "from a window at the side, subtle environmental depth of field on the background. "
+    "Natural continuous body movement throughout: subtle breathing that shifts the shoulders 2-3mm, "
+    "micro head adjustments (a slow 5-degree tilt left then right over 4 seconds), realistic eye "
+    "blinking every 3-5 seconds, lips moving naturally and precisely in sync with the speech. "
+    "One hand rests naturally at chest level or holds the product gently — fingers relaxed, not rigid. "
+    "At 30% through the clip, one forearm lifts 10cm in a slow casual gesture then returns to rest. "
+    "Stable, locked-off camera with only organic micro-shakes as if hand-held on a table. "
+    "Skin shows natural texture: visible pores, slight asymmetry, no retouching or beauty filter. "
+    "STRICTLY NO: exaggerated emotion, wide eyes, big open-mouth smile, dramatic pointing, rapid gestures, "
+    "fast head shakes, stiff robot-like stillness, or AI video morphing artifacts."
 )
 
 SEGMENT_MOTION_PROMPTS = {
-    "hook": REALISM_CORE + " Tone: calm and direct, like telling a friend something you just noticed.",
-    "body": REALISM_CORE + " If a product is in hand it is held still and naturally at chest level.",
-    "cta": REALISM_CORE + " Tone: relaxed and sincere; a slight, gentle smile only where the words fit.",
+    "hook": (
+        "Ultra-photorealistic UGC creator speaking directly to camera in a real sunlit home environment. "
+        "The creator leans slightly forward from a relaxed seated posture at the START of the clip — "
+        "as if about to share something surprising. Eyes make direct, calm contact with the lens. "
+        "Subtle slow head tilt of 5 degrees to the right over 2 seconds, then re-centres. "
+        "One hand rises from lap to lightly touch the collarbone at 1.5 seconds in — a natural "
+        "'I have to tell you this' gesture — then drifts back down. "
+        "Shoulders breathe: a slow exhale-fall at second 2, inhale-rise at second 4. "
+        "Background: real room interior with natural bokeh, soft daylight from the side, warm 5000K. "
+        "Tone: calm urgency, like confiding in a close friend. Absolutely no stiffness. "
+        "NO exaggerated emotion, NO wide eyes, NO big smile, NO pointing, NO fast movement. "
+        "Stable propped-phone framing, realistic skin and hair, no beauty filter, 30fps motion smoothness."
+    ),
+    "body": (
+        "Ultra-photorealistic UGC creator in mid-conversation, filmed in a warm indoor setting. "
+        "The product or device is held gently and naturally at chest level in one hand — "
+        "occasionally tilted 15 degrees as if casually showing it during conversation. "
+        "The free hand makes one slow open-palm gesture at second 3, then rests in lap. "
+        "Head nods gently: 3-degree downward nod at the start of a key phrase, returns up slowly. "
+        "Eyes: direct contact with camera 80% of the time, glance down briefly at the product once. "
+        "Shoulders: slow breathing rhythm visible, slight lean-back at second 5 then re-centres. "
+        "Background: real environment with depth of field, warm natural or ring-light illumination. "
+        "Realistic skin with slight texture, natural hair movement from breathing. "
+        "NO exaggerated emotion, NO dramatic gestures, NO robot stillness, NO AI artifacts. "
+        "Stable phone-camera framing, 30fps, authentic UGC-testimonial visual quality."
+    ),
+    "cta": (
+        "Ultra-photorealistic UGC creator delivering a warm, sincere closing statement to camera. "
+        "Natural relaxed posture — leans very slightly toward the camera at second 1 for intimacy. "
+        "A soft, closed-mouth natural smile appears gradually from second 2 to second 4 — never forced. "
+        "One hand gesture: a slow open-hand sweep outward at waist height at second 3, returning to rest — "
+        "the kind of gesture someone makes when saying 'honestly, just go for it'. "
+        "Head: gentle slow nod at the key call-to-action word (one nod over 1.5 seconds). "
+        "Eyes: warm, direct, trustworthy — no blinking during the key final sentence. "
+        "Background: slightly brighter than body scenes, warm soft light, real room depth. "
+        "Tone: genuine recommendation from a friend, not a sales pitch. Completely natural micro-expressions. "
+        "NO wide smile showing teeth, NO thumbs-up, NO pointing, NO stiff movement. "
+        "Stable framing, realistic skin, 30fps, cinematic UGC quality."
+    ),
 }
 
 DEFAULT_MOTION_PROMPT = REALISM_CORE
@@ -315,27 +357,46 @@ async def generate_video_avatar_iv(
     audio_url: str,
     segment: str = "body",
     resolution: str = "",
+    background_video_url: str = "",
     poll_interval: int = 6,
     max_wait: int = 900,
     on_log: Optional[Callable[[str], None]] = None,
 ) -> str:
-    """HeyGen Avatar IV: animates the avatar photo and lip-syncs it to OUR voiceover WAV (voice stays ours)."""
+    """
+    HeyGen Avatar IV: animates the avatar photo and lip-syncs it to OUR voiceover WAV.
+    Optionally composites the avatar over a real background video (Option B dynamic background).
+    If background_video_url is provided, HeyGen handles depth-aware placement server-side —
+    producing natural bokeh, matched lighting, and a moving environment behind the creator.
+    """
     https_audio = _https_audio_url(audio_url)
     data_url = await _image_to_data_url(image_url)
+
+    # Build rich, detailed motion prompt for this specific segment
+    motion_prompt = SEGMENT_MOTION_PROMPTS.get(segment, DEFAULT_MOTION_PROMPT)
+
+    # Build input_references: always avatar photo + voiceover
+    input_refs = [
+        {"type": "image_url", "image_url": {"url": data_url}},
+        {"type": "audio_url", "audio_url": {"url": https_audio}},
+    ]
+
+    # Option B: inject dynamic background video — HeyGen composites creator inside the scene
+    if background_video_url:
+        input_refs.append({"type": "video_url", "video_url": {"url": background_video_url}})
+        if on_log:
+            on_log(f"🏠 Dynamic background video injected for {segment.upper()} (HeyGen server-side composite).")
+
     payload = {
         "model": "heygen/avatar-iv",
-        "prompt": SEGMENT_MOTION_PROMPTS.get(segment, DEFAULT_MOTION_PROMPT)[:900],
+        "prompt": motion_prompt[:900],
         "aspect_ratio": "9:16",
         "resolution": resolution or AVATAR_RESOLUTION,
-        "input_references": [
-            {"type": "image_url", "image_url": {"url": data_url}},
-            {"type": "audio_url", "audio_url": {"url": https_audio}},
-        ],
+        "input_references": input_refs,
     }
     if on_log:
-        on_log(f"Submitting {segment.upper()} to HeyGen Avatar IV with your voiceover audio...")
+        on_log(f"Submitting {segment.upper()} to HeyGen Avatar IV with voiceover audio{'+ background video' if background_video_url else ''}...")
 
-    heygen_params = {"motion_prompt": REALISM_CORE[:600]}
+    heygen_params = {"motion_prompt": motion_prompt[:600]}
     if AVATAR_EXPRESSIVENESS:
         heygen_params["expressiveness"] = AVATAR_EXPRESSIVENESS
     tuned = {**payload, "provider": {"options": {"heygen": {"parameters": heygen_params}}}}
@@ -344,8 +405,16 @@ async def generate_video_avatar_iv(
         resp = await client.post(OPENROUTER_VIDEOS_URL, headers=_or_headers(), json=tuned)
         if resp.status_code == 400:
             if on_log:
-                on_log(f"Avatar IV rejected expressiveness options ({resp.text[:160]}); retrying with defaults.")
-            resp = await client.post(OPENROUTER_VIDEOS_URL, headers=_or_headers(), json=payload)
+                on_log(f"Avatar IV rejected extra options ({resp.text[:200]}); retrying plain payload.")
+            # On rejection, retry without background video first (may be unsupported by API version)
+            if background_video_url:
+                plain_refs = [r for r in input_refs if r.get("type") != "video_url"]
+                fallback_payload = {**payload, "input_references": plain_refs}
+                resp = await client.post(OPENROUTER_VIDEOS_URL, headers=_or_headers(), json=fallback_payload)
+                if resp.status_code == 400:
+                    resp = await client.post(OPENROUTER_VIDEOS_URL, headers=_or_headers(), json=payload)
+            else:
+                resp = await client.post(OPENROUTER_VIDEOS_URL, headers=_or_headers(), json=payload)
         if resp.status_code not in (200, 202):
             raise RuntimeError(f"Avatar IV submission failed ({resp.status_code}): {resp.text[:400]}")
         res = resp.json()
@@ -485,16 +554,22 @@ async def generate_video(
     backend: str = "openrouter",           # "wavespeed" | "openrouter"
     openrouter_model: str = "heygen/heygen-video-1",
     scene_prompt: str = "",
+    background_video_url: str = "",        # Option B: dynamic room background for avatar scenes
     on_log: Optional[Callable[[str], None]] = None,
 ) -> str:
     """
     Unified entrypoint for video clip generation.
     Supports both WaveSpeed lip-sync and OpenRouter AI video engines.
+    background_video_url: when set, HeyGen Avatar IV composites the creator inside the room video.
     """
     if backend == "openrouter" and openrouter_model.lower().startswith("heygen/") and audio_url:
         try:
             return await generate_video_avatar_iv(
-                image_url=image_url, audio_url=audio_url, segment=segment, on_log=on_log,
+                image_url=image_url,
+                audio_url=audio_url,
+                segment=segment,
+                background_video_url=background_video_url,
+                on_log=on_log,
             )
         except Exception as e:
             if on_log:

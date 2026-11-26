@@ -93,6 +93,44 @@ def _emit(job_id: str, step: str, message: str, progress: int, **extra) -> None:
         print(f"[{timestamp}] [{job_id[:8]}] [{step.upper()}] ({progress}%): {message}", flush=True)
 
 
+def _pick_background_video(analysis: dict) -> str:
+    """
+    Select the best looping background video for the avatar scene based on product analysis.
+    Returns a public URL to the background video, or empty string if none available.
+    HeyGen Avatar IV composites the creator inside this environment server-side (Option B).
+    """
+    base = os.getenv("SERVER_URL", "http://localhost:8765").rstrip("/")
+    bg_base = f"{base}/static/backgrounds"
+    bg_dir  = BASE_DIR / "static" / "backgrounds"
+
+    setting      = analysis.get("character_profile", {}).get("setting", "").lower()
+    product_type = analysis.get("product_type", "").lower()
+
+    # Priority mapping: product type / setting keyword → background file
+    candidates = []
+
+    if any(k in product_type for k in ["software", "saas", "app", "digital", "service"]):
+        candidates = ["office_desk.mp4", "office_bright.mp4", "studio_neutral.mp4"]
+    elif any(k in setting for k in ["office", "desk", "workspace", "laptop"]):
+        candidates = ["office_desk.mp4", "office_bright.mp4", "studio_neutral.mp4"]
+    elif any(k in setting for k in ["bedroom", "vanity", "bathroom", "mirror"]):
+        candidates = ["bedroom_cozy.mp4", "bedroom_modern.mp4", "studio_neutral.mp4"]
+    elif any(k in setting for k in ["kitchen", "counter", "food", "health"]):
+        candidates = ["kitchen_clean.mp4", "living_room.mp4", "studio_neutral.mp4"]
+    elif any(k in setting for k in ["living", "lounge", "sofa", "couch"]):
+        candidates = ["living_room.mp4", "bedroom_cozy.mp4", "studio_neutral.mp4"]
+    else:
+        candidates = ["studio_neutral.mp4", "office_desk.mp4", "bedroom_cozy.mp4"]
+
+    # Return the first candidate that exists on disk
+    for fname in candidates:
+        if (bg_dir / fname).exists():
+            return f"{bg_base}/{fname}"
+
+    # No background videos available yet — return empty (Avatar IV will use its own default)
+    return ""
+
+
 # ─── Pipeline ────────────────────────────────────────────────────────────────
 
 async def run_pipeline(
@@ -118,6 +156,8 @@ async def run_pipeline(
     video_provider: str = "local",
     local_video_model: str = "ltx23_distilled_q6",
     motion_style: str = "reel",
+    scene_voice_id: str = "",
+    scene_language: str = "auto",
 ) -> None:
     job = JOBS[job_id]
     job["status"] = "running"
@@ -146,6 +186,38 @@ async def run_pipeline(
                 image_mime=product_image_mime,
             )
         job["analysis"] = analysis
+
+        # Dynamic Scenes engine (HeyGen Video 1 story shots) — self-contained path, see pipeline/scene_engine.py
+        if video_backend == "heygen_scenes":
+            from pipeline.scene_engine import run_scene_engine
+            res = await run_scene_engine(
+                job_id=job_id,
+                product_name=product_name,
+                product_benefit=product_benefit,
+                product_mode=product_mode,
+                analysis=analysis,
+                avatar_url=avatar_url,
+                product_image_url=product_image_url,
+                custom_script=custom_script,
+                ugc_image_model=ugc_image_model,
+                image_provider=image_provider,
+                local_image_model=local_image_model,
+                voice_id=scene_voice_id,
+                language_choice=scene_language,
+                emit=lambda step, msg, pct, **kw: _emit(job_id, step, msg, pct, **kw),
+            )
+            job.update({k: res[k] for k in (
+                "video_url", "script", "raw_script", "display_script",
+                "segments", "clip_urls", "ugc_image_url", "audio_url",
+            )})
+            job["status"] = "completed"
+            _emit(
+                job_id, "done", f"Your UGC ad is ready! (generation cost ≈ ${res['cost']:.2f})", 100,
+                video_url=job["video_url"], script=job["script"], raw_script=job["raw_script"],
+                display_script=job["display_script"], audio_url="", ugc_image_url=job["ugc_image_url"],
+                segments=job["segments"], clip_urls=job["clip_urls"], analysis=job.get("analysis", {}),
+            )
+            return
 
         # ────────────────────────────────────────────────────────────────────
         # Step 2: Generate or Parse Screenplay + Director Scene Plan
@@ -480,6 +552,12 @@ async def run_pipeline(
                 # Talking Head Avatar scene
                 _emit(job_id, "video", f"👤 Generating Creator Avatar for Scene {idx+1} ({label})...", pct_base)
                 avatar_img = segment_image_urls[idx] or avatar_url or ref_image_url
+
+                # Option B: dynamic background — pick matching room video for this product/setting
+                bg_url = _pick_background_video(analysis)
+                if bg_url:
+                    _emit(job_id, "video", f"🏠 [Scene {idx+1}] Dynamic background selected: {bg_url.split('/')[-1]}", pct_base)
+
                 clip = await generate_video(
                     image_url=avatar_img,
                     audio_url=audio_urls[idx] if idx < len(audio_urls) else "",
@@ -489,6 +567,7 @@ async def run_pipeline(
                     backend=video_backend,
                     openrouter_model=openrouter_video_model,
                     scene_prompt=seg.get("scene_prompt", ""),
+                    background_video_url=bg_url,
                     on_log=_log_cb,
                 )
                 _emit(job_id, "video", f"✅ Scene {idx+1} Avatar clip ready!", pct_base + int(32 / len(segments)))
@@ -524,6 +603,7 @@ async def run_pipeline(
                 audio_urls=audio_urls,
                 brand_color=brand_color_tuple,
                 motion_style=motion_style,
+                analysis=analysis,
             )
         else:
             video_url = await compose_final_video(
@@ -534,6 +614,7 @@ async def run_pipeline(
                 audio_urls=audio_urls,
                 brand_color=brand_color_tuple,
                 motion_style=motion_style,
+                analysis=analysis,
             )
 
 
@@ -577,7 +658,9 @@ async def run_pipeline(
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+    # version tag on static assets so browsers never keep a stale app.js/style.css after an edit
+    asset_v = int(max((BASE_DIR / "static" / f).stat().st_mtime for f in ("app.js", "style.css")))
+    return templates.TemplateResponse("index.html", {"request": request, "asset_v": asset_v})
 
 
 @app.get("/api/gpu-status")
@@ -625,6 +708,8 @@ async def generate(
     local_video_model:      str            = Form("ltx23_distilled_q6"),
     broll_video_model:      str            = Form("bytedance/seedance-1-5-pro"),
     motion_style:           str            = Form("reel"),
+    scene_voice_id:         str            = Form(""),
+    scene_language:         str            = Form("auto"),
     avatar_url:             str            = Form(""),
     burn_captions:          str            = Form("false"),
     video_backend:          str            = Form("wavespeed"),
@@ -715,6 +800,8 @@ async def generate(
         video_provider=video_provider,
         local_video_model=local_video_model,
         motion_style=motion_style,
+        scene_voice_id=scene_voice_id.strip(),
+        scene_language=scene_language.strip().lower(),
     ))
 
     return {"job_id": job_id}
@@ -780,7 +867,7 @@ async def get_result(job_id: str):
             return {
                 "job_id": job_id,
                 "status": "completed",
-                "video_url": f"/static/uploads/{matches[0].name}",
+                "video_url": f"/uploads/{matches[0].name}",
                 "progress": 100,
                 "steps": [],
             }
@@ -790,7 +877,7 @@ async def get_result(job_id: str):
     if not video_url:
         matches = list(UPLOAD_DIR.glob(f"final_{job_id}*.mp4"))
         if matches:
-            video_url = f"/static/uploads/{matches[0].name}"
+            video_url = f"/uploads/{matches[0].name}"
             job["video_url"] = video_url
             job["status"] = "completed"
             job["progress"] = 100

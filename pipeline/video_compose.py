@@ -73,11 +73,15 @@ def _reencode_clip(
     Preserves native audio when present (vital for HeyGen lip-sync realism).
     Applies audio loudness normalization (-16 LUFS) and subtle cut-point anti-pop fades.
     """
-    vf = (
+    # Base scale/pad/fps filter — pads to exact 9:16 with black bars if needed
+    _scale_pad = (
         f"scale={width}:{height}:force_original_aspect_ratio=decrease:flags=lanczos,"
         f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black,"
         f"setsar=1,fps=30"
     )
+
+    # Video scaling: 1080x1920 9:16 vertical, centered with black padding if needed
+    vf = _scale_pad
 
     has_audio = _has_audio(src)
     v_dur = _get_duration(src)
@@ -91,6 +95,8 @@ def _reencode_clip(
         f"afade=t=out:st={fade_out_start:.3f}:d=0.03"
     )
 
+    v_enc = ["-c:v", "h264_nvenc", "-preset", "fast", "-pix_fmt", "yuv420p"]
+
     if has_audio and prefer_native_audio:
         # Clip already contains its own synchronized speech (HeyGen avatar).
         # We PRESERVE the native speech to maintain 100% exact lip-sync!
@@ -99,7 +105,8 @@ def _reencode_clip(
             "-i", str(src),
             "-vf", vf,
             "-af", af_native,
-            "-c:v", "libx264", "-crf", "19", "-preset", "medium", "-pix_fmt", "yuv420p",
+            "-t", f"{v_dur:.3f}",
+            *v_enc,
             "-c:a", "aac", "-ar", "48000", "-ac", "2", "-b:a", "192k",
             "-movflags", "+faststart",
             str(dst),
@@ -123,7 +130,7 @@ def _reencode_clip(
                 "-af", af_ext,
                 "-map", "0:v:0", "-map", "1:a:0",
                 "-t", f"{a_dur:.3f}",
-                "-c:v", "libx264", "-crf", "19", "-preset", "medium", "-pix_fmt", "yuv420p",
+                *v_enc,
                 "-c:a", "aac", "-ar", "48000", "-ac", "2", "-b:a", "192k",
                 "-movflags", "+faststart",
                 str(dst),
@@ -137,7 +144,7 @@ def _reencode_clip(
                 "-af", af_ext,
                 "-map", "0:v:0", "-map", "1:a:0",
                 "-t", f"{a_dur:.3f}",
-                "-c:v", "libx264", "-crf", "19", "-preset", "medium", "-pix_fmt", "yuv420p",
+                *v_enc,
                 "-c:a", "aac", "-ar", "48000", "-ac", "2", "-b:a", "192k",
                 "-movflags", "+faststart",
                 str(dst),
@@ -149,7 +156,8 @@ def _reencode_clip(
             "-i", str(src),
             "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
             "-vf", vf,
-            "-c:v", "libx264", "-crf", "19", "-preset", "medium", "-pix_fmt", "yuv420p",
+            "-t", f"{v_dur:.3f}",
+            *v_enc,
             "-c:a", "aac", "-ar", "48000", "-ac", "2", "-b:a", "192k",
             "-shortest",
             "-movflags", "+faststart",
@@ -183,7 +191,7 @@ def _concat_clips(clip_paths: list[Path], output: Path) -> None:
         *inputs,
         "-filter_complex", filter_complex,
         "-map", "[outv]", "-map", "[outa]",
-        "-c:v", "libx264", "-crf", "19", "-preset", "medium", "-pix_fmt", "yuv420p",
+        "-c:v", "h264_nvenc", "-preset", "fast", "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-ar", "48000", "-ac", "2", "-b:a", "192k",
         "-movflags", "+faststart",
         str(output),
@@ -255,15 +263,15 @@ def _burn_captions(video_in: Path, srt_path: Path, video_out: Path) -> None:
     """Burn UGC-style bold captions into the video with clean high-contrast styling."""
     subs_filter = (
         f"subtitles='{srt_path}':"
-        "force_style='FontName=DejaVu Sans,"
-        "FontSize=22,"
+        "force_style='FontName=Arial Black,"
+        "FontSize=38,"
         "Bold=1,"
         "PrimaryColour=&H00FFFFFF,"
         "OutlineColour=&H00000000,"
-        "Outline=2.6,"
-        "Shadow=1.2,"
+        "Outline=4.0,"
+        "Shadow=2.0,"
         "Alignment=2,"
-        "MarginV=55'"
+        "MarginV=110'"
     )
 
     cmd = [
@@ -288,6 +296,7 @@ async def compose_final_video(
     audio_urls: Optional[list[str]] = None,
     brand_color: Optional[tuple[int, int, int]] = None,
     motion_style: str = "reel",
+    analysis: dict = {},
 ) -> str:
     """
     Download clips, stitch them together into cinematic hybrid video,
@@ -428,7 +437,48 @@ async def compose_final_video(
                     pass
         # minimal style: no extra burned captions or grain
 
-        # 6. Save final video to uploads/
+        # 6. Append brand outro card (2.5s fade-in/out end card)
+        try:
+            from pipeline.outro_card import build_outro_card
+            brand_name = analysis.get("brand_name", "") or ""
+            tagline    = analysis.get("tagline", "") or analysis.get("use_case", "") or ""
+            website    = analysis.get("website", "") or ""
+            outro_path = tmp_path / "outro.mp4"
+            outro_mp4  = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: build_outro_card(
+                    brand_name=brand_name or "Thank You",
+                    tagline=tagline,
+                    website=website,
+                    brand_color=brand_color,
+                    duration_sec=2.5,
+                    output_path=outro_path,
+                )
+            )
+            # Add silent audio to outro card for concat compatibility
+            outro_with_audio = tmp_path / "outro_audio.mp4"
+            cmd_audio = [
+                "ffmpeg", "-y",
+                "-i", str(outro_mp4),
+                "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
+                "-map", "0:v", "-map", "1:a",
+                "-c:v", "copy",
+                "-c:a", "aac", "-ar", "48000", "-ac", "2", "-b:a", "128k",
+                "-shortest",
+                str(outro_with_audio),
+            ]
+            res_audio = subprocess.run(cmd_audio, capture_output=True, text=True)
+            if res_audio.returncode == 0:
+                # Concat current video + outro
+                final_with_outro = tmp_path / "with_outro.mp4"
+                await asyncio.get_event_loop().run_in_executor(
+                    None, _concat_clips, [current_video, outro_with_audio], final_with_outro
+                )
+                current_video = final_with_outro
+        except Exception as outro_err:
+            print(f"[Compose] Outro card notice: {outro_err}")
+
+        # 7. Save final video to uploads/
         final_name = f"final_{job_id}.mp4"
         final_path = UPLOAD_DIR / final_name
         final_path.write_bytes(current_video.read_bytes())
@@ -444,6 +494,7 @@ async def save_single_clip(
     audio_urls: Optional[list[str]] = None,
     brand_color: Optional[tuple[int, int, int]] = None,
     motion_style: str = "reel",
+    analysis: dict = {},
 ) -> str:
     return await compose_final_video(
         clip_urls=[clip_url],
@@ -453,5 +504,6 @@ async def save_single_clip(
         audio_urls=audio_urls,
         brand_color=brand_color,
         motion_style=motion_style,
+        analysis=analysis,
     )
 

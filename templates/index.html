@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="stylesheet" href="/static/style.css?v={{ asset_v }}" />
 </head>
 <body>
 
@@ -166,6 +166,80 @@ ROI Infotech — 15+ Years | 649 Websites Designed (roiinfotech.com)
           <div class="engine-desc">
             Generative AI video with camera motion &amp; scene physics via Google Veo, Seedance, Kling, or HeyGen.
           </div>
+        </div>
+
+        <div class="engine-card" id="card-engine-scenes">
+          <div class="engine-badge new">New</div>
+          <div class="engine-icon">🎞️</div>
+          <div class="engine-title">Dynamic Scenes (HeyGen)</div>
+          <div class="engine-desc">
+            Story ad with the same person acting in different scenes (laptop, phone, office) and speaking, with styled captions. Needs a character image. ≈ $0.30 per shot.
+          </div>
+        </div>
+      </div>
+
+      <!-- Dynamic Scenes language (visible when Dynamic Scenes engine active) -->
+      <div id="scene-language-container" style="display:none;margin-top:16px;">
+        <div class="form-group">
+          <label>Dialogue language</label>
+          <div class="lang-cards" id="scene-lang-cards">
+            <div class="engine-card active" data-lang="auto">
+              <div class="engine-title">Auto</div>
+              <div class="engine-desc">Follows your script</div>
+            </div>
+            <div class="engine-card" data-lang="english">
+              <div class="engine-title">English</div>
+              <div class="engine-desc">Spoken in English</div>
+            </div>
+            <div class="engine-card" data-lang="hinglish">
+              <div class="engine-title">Hinglish</div>
+              <div class="engine-desc">Hindi + English words</div>
+            </div>
+            <div class="engine-card" data-lang="hindi">
+              <div class="engine-title">हिन्दी Hindi</div>
+              <div class="engine-desc">Spoken in Hindi</div>
+            </div>
+          </div>
+          <input type="hidden" id="scene_language" name="scene_language" value="auto" />
+          <p class="hint" id="scene-lang-hint"></p>
+        </div>
+      </div>
+
+      <!-- Dynamic Scenes voice (visible when Dynamic Scenes engine active) -->
+      <div id="scene-voice-container" style="display:none;margin-top:16px;">
+        <div class="form-group">
+          <label for="scene_voice_select">Voice (HeyGen)</label>
+          <select id="scene_voice_select">
+            <option value="">Automatic — HeyGen picks the voice</option>
+            <optgroup label="Hindi — male">
+              <option value="1dd92b1106f8428fa8e70a7dadbaf465">Manu</option>
+              <option value="1e028a905629491aaf74562d23fcef6e">Ranbir M</option>
+              <option value="0adc547b76a5401c856274c379904eb7">Luminous Laksh</option>
+              <option value="29a15e4c65c84f4ca12b0bde8825666e">Solemn Sachin</option>
+              <option value="31adb5a5372049579b8755f33193b320">Storyteller Satya</option>
+              <option value="40224e2878074d728fda8bf94cd6b57d">Naveen</option>
+              <option value="52e85ae3ce394078a21db0d7f6179357">Ruhaan</option>
+            </optgroup>
+            <optgroup label="Hindi — female">
+              <option value="0b464b2f4e2249a4b5a05e60eaf41e7e">Riya Mehta</option>
+              <option value="1bd41839492f4f22b97f1a6678aded7b">Aahana Verma</option>
+              <option value="28f6d8258c16444581b493f5a0f40f74">Saanu</option>
+              <option value="3240f8ee6b06414cb9bab4f9615445af">Bollywood Priyanka</option>
+              <option value="4df129c9580c45e28d013986b787de9b">Muskaan</option>
+            </optgroup>
+            <optgroup label="English">
+              <option value="8cbcc90b5f9349c286114dc08c6a498a">Jake (male)</option>
+              <option value="2a50d70e96ff44518780c5d150127cce">Liam (male)</option>
+              <option value="6be73833ef9a4eb0aeee399b8fe9d62b">Andrew (male)</option>
+              <option value="c5e71f9038a2419d9d43c7132c31fe49">Jennifer (female)</option>
+              <option value="a7ab5a1d74f444c9862c5e3ca163f258">Nicola (female)</option>
+              <option value="16a09e4706f74997ba4ed05ea11470f6">Cassidy (female)</option>
+            </optgroup>
+            <option value="__custom__">Custom voice_id…</option>
+          </select>
+          <input type="text" id="scene_voice_custom" placeholder="Paste a HeyGen voice_id" style="display:none;margin-top:8px;" />
+          <input type="hidden" id="scene_voice_id" name="scene_voice_id" value="" />
+          <p class="hint">Sent with every shot so the character keeps one voice. Whether HeyGen Video 1 applies it is still being verified.</p>
         </div>
       </div>
 
@@ -505,6 +579,6 @@ ROI Infotech — 15+ Years | 649 Websites Designed (roiinfotech.com)
 
 </div><!-- /container -->
 
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v={{ asset_v }}"></script>
 </body>
 </html>

@@ -544,3 +544,11 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.5; transform: scale(0.9); }
 }
+
+/* Hidden when the Dynamic Scenes engine is selected (see applyEngineVisibility in app.js) */
+.scene-hidden { display: none !important; }
+
+/* Dynamic Scenes language buttons */
+.lang-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 8px; }
+.lang-cards .engine-card { padding: 12px; text-align: center; }
+@media (max-width: 600px) { .lang-cards { grid-template-columns: repeat(2, 1fr); } }

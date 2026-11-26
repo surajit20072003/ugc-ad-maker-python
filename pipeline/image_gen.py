@@ -69,64 +69,84 @@ async def generate_ugc_prompt(
 
     pose_map = {
         "hook": (
-            "relaxed natural posture facing the camera, very slight lean in; calm, softly engaged expression with eyes looking steadily into the lens "
-            "and the mouth gently closed or only barely parted; one hand resting naturally near the chest or lightly holding the product, "
-            "no pointing, no big gestures"
+            "Relaxed natural seated posture, torso angled 5-10 degrees toward camera for intimacy. "
+            "Calm direct eye contact with the lens, subtle slight lean-in as if starting a sentence. "
+            "One hand resting lightly on the knee or lap, the other near the collarbone in a natural "
+            "'let me tell you' gesture. Mouth barely parted or softly closed. "
+            "No exaggerated expression — a neutral-to-engaged calm face, like someone who just "
+            "discovered something worth sharing. Head perfectly level, no tilt."
         ),
         "body": (
-            "relaxed storytelling posture: product held naturally and still at chest level in one hand, "
-            "the other hand resting down or lightly open, calm steady eye contact with the camera, faint natural smile at most"
+            "Relaxed mid-conversation posture: torso square, both hands visible at chest level. "
+            "Product held naturally and still in the primary hand at chest level — fingers relaxed, "
+            "not gripping tightly. Free hand open or lightly resting at waist. "
+            "Calm steady eye contact with the camera, mouth naturally parted as if mid-sentence. "
+            "A faint natural expression of gentle confidence — not smiling, not frowning. "
+            "Body language: open and approachable. No stiffness in shoulders or arms."
         ),
         "cta": (
-            "relaxed sincere posture, soft natural closed-mouth smile (no teeth), calm eye contact with the lens, "
-            "one hand resting naturally or lightly holding the product, no thumbs-up pose, no exaggerated gesture"
+            "Sincere, warm seated posture, slight lean toward camera, shoulders relaxed and open. "
+            "Soft natural closed-mouth smile — not forced, corners of mouth gently upturned. "
+            "Calm warm eye contact with the lens — the expression of someone genuinely recommending "
+            "something they believe in. One hand resting naturally on knee, the other lightly touching "
+            "the product or open in a gentle gesture at waist height. No thumbs-up. No teeth showing."
         ),
     }
     pose = pose_map.get(segment, pose_map["body"])
 
     if scene_direction and scene_direction.get("movement_in_scene"):
-        pose = f"{pose}. Action nuance: {scene_direction['movement_in_scene']}"
+        pose = f"{pose}. Scene nuance: {scene_direction['movement_in_scene']}"
 
     if mode == "software":
         device = analysis.get("device_type", "laptop")
         user_msg = (
-            f"Generate a photorealistic image generation prompt for a 9:16 vertical UGC testimonial photo.\n\n"
-            f"LOCKED CHARACTER: {char_desc}\n"
-            f"LOCKED ATTIRE: {char_attire}\n"
-            f"LOCKED ENVIRONMENT: {char_setting}\n"
-            f"PRODUCT: {product_name} (software used on {device} visible in scene)\n"
-            f"POSE & EXPRESSION: {pose}\n\n"
-            "MANDATORY PHOTOGRAPHY RULES:\n"
-            "- WAIST-UP framing — BOTH hands MUST be clearly visible in frame (essential for video lipsync animation)\n"
-            "- 9:16 vertical portrait, smartphone selfie or handheld camera angle\n"
-            "- Natural window daylight, authentic soft skin texture, fine film grain\n"
-            "- NO watermarks, NO text banners, NO UI subtitles rendered on image\n"
-            "- Ultra-realistic photography, authentic UGC creator feel (Fujifilm 35mm f/2.0 look)\n"
-            "- REALISM: natural skin with visible pores and slight asymmetry, no airbrushing or beauty filter, subtle neutral-calm expression, "
-            "no exaggerated emotion, no wide eyes, no teeth showing, anatomically correct hands with five fingers, real phone-camera look\n"
-            "- FRAMING: camera straight and level at eye height on a propped-up phone, face centered and facing the lens, shoulders square, NO tilted frame, NO selfie arm or blurred foreground limb, nothing covering the face"
+            f"Write a highly detailed, technically precise image generation prompt for an AI diffusion model.\n\n"
+            f"=== LOCKED CHARACTER PROFILE ===\n"
+            f"Person: {char_desc}\n"
+            f"Attire: {char_attire}\n"
+            f"Environment: {char_setting}\n"
+            f"Product: {product_name} (software shown on {device} in the scene)\n"
+            f"Pose & Expression: {pose}\n\n"
+            f"=== SCENE REQUIREMENTS ===\n"
+            "- FORMAT: 9:16 vertical portrait (576x1024px), smartphone selfie or propped-phone angle at eye height\n"
+            "- FRAMING: Waist-up shot. BOTH hands clearly in frame. Face centered and facing lens. Shoulders square to camera.\n"
+            f"- The {device} should be partially visible on a desk/table in the lower frame, showing the product's UI as a blurred background detail.\n"
+            "- LIGHTING: Soft, natural window daylight from the left side. Subtle warm 5000K room ambient fill. No harsh shadows. No ring light glare.\n"
+            "- DEPTH OF FIELD: Shallow DOF — creator's face and hands in sharp focus, background environment (room, desk, bookshelf, plants) pleasantly blurred at f/2.0.\n"
+            "- SKIN: Photorealistic natural skin with visible pores, fine texture, slight asymmetry, no airbrushing or smoothing filter.\n"
+            "- HAIR: Natural, slightly imperfect hair — a few wisps out of place as if freshly filmed, not styled for a studio shoot.\n"
+            "- CAMERA LOOK: Authentic smartphone camera look — slight warm exposure, natural color grade, fine digital noise/grain, no professional studio feel.\n"
+            "- BACKGROUND: Real room interior visible through the shallow DOF: bookshelves, a plant, desk clutter, soft curtains, or a TV — any authentic home/office environment that matches the character setting.\n"
+            "- FORBIDDEN: NO watermarks, NO text overlays, NO UI subtitles, NO captions rendered into the image. NO stock-photo artificiality. NO beauty filter. NO tilted frame. NO selfie arm or blurred foreground limb. NO hands covering the face.\n"
+            "- HANDS: Anatomically correct hands with five fingers each. Must be clearly visible. Natural finger positioning, not splayed or clenched.\n"
+            "Output ONLY the prompt text. No quotes, no labels, no preamble."
         )
     else:
         prod_type   = analysis.get("product_type", "holdable")
         visual_desc = analysis.get("visual_description", "clean product")
         visible_txt = analysis.get("visible_text", "")
         user_msg = (
-            f"Generate a photorealistic image generation prompt for a 9:16 vertical UGC product testimonial photo.\n\n"
-            f"LOCKED CHARACTER: {char_desc}\n"
-            f"LOCKED ATTIRE: {char_attire}\n"
-            f"LOCKED ENVIRONMENT: {char_setting}\n"
-            f"PRODUCT: {product_name} by {brand} ({prod_type}, {visual_desc}, accents in {colors})\n"
-            f"VISIBLE LABEL HINT: {visible_txt}\n"
-            f"POSE & EXPRESSION: {pose}\n\n"
-            "MANDATORY PHOTOGRAPHY RULES:\n"
-            "- WAIST-UP framing — BOTH hands MUST be clearly visible in frame, product held at chest level\n"
-            "- 9:16 vertical portrait, authentic smartphone camera selfie feel\n"
-            "- Soft natural daylight, warm indoor environment, subtle depth of field\n"
-            "- NO AI text gibberish, NO overlay subtitles, NO artificial stickers\n"
-            "- Hyper-realistic, candid social media creator aesthetic\n"
-            "- REALISM: natural skin with visible pores and slight asymmetry, no airbrushing or beauty filter, subtle neutral-calm expression, "
-            "no exaggerated emotion, no wide eyes, no teeth showing, anatomically correct hands with five fingers, real phone-camera look\n"
-            "- FRAMING: camera straight and level at eye height on a propped-up phone, face centered and facing the lens, shoulders square, NO tilted frame, NO selfie arm or blurred foreground limb, nothing covering the face"
+            f"Write a highly detailed, technically precise image generation prompt for an AI diffusion model.\n\n"
+            f"=== LOCKED CHARACTER PROFILE ===\n"
+            f"Person: {char_desc}\n"
+            f"Attire: {char_attire}\n"
+            f"Environment: {char_setting}\n"
+            f"Product: {product_name} by {brand} — {prod_type}, {visual_desc}. Brand accent colors: {colors}.\n"
+            f"Label visible on product: {visible_txt}\n"
+            f"Pose & Expression: {pose}\n\n"
+            f"=== SCENE REQUIREMENTS ===\n"
+            "- FORMAT: 9:16 vertical portrait (576x1024px), authentic smartphone selfie or propped-phone camera at eye level\n"
+            "- FRAMING: Waist-up shot. BOTH hands visible. Product held at chest level in the primary hand. Face centered, shoulders square.\n"
+            "- PRODUCT HANDLING: Product appears naturally held — the creator holds it the way a real person would, not posed like a catalog shot.\n"
+            "- LIGHTING: Warm natural window light from the side. Soft ambient room light. Slight warm color cast. No flash, no harsh shadows.\n"
+            "- DEPTH OF FIELD: Shallow DOF (f/2.0 equivalent) — creator's face and hands/product sharp, background environment pleasantly blurred.\n"
+            "- BACKGROUND: Real home environment visible softly blurred behind the creator: a vanity mirror, bedside table, shelves with items, warm-toned walls, indoor plants, or similar authentic home details. Must match the character setting.\n"
+            "- SKIN: Photorealistic, natural skin texture with visible pores and slight asymmetry. Zero airbrushing, no beauty filter smoothing.\n"
+            "- HAIR: Natural, slightly casual — looks like someone filming themselves at home, not a studio model.\n"
+            "- CAMERA: Authentic smartphone camera aesthetic: slight warm exposure, natural film-grain texture, no professional studio lighting setup visible.\n"
+            "- HANDS: Anatomically correct five-fingered hands. Clearly visible. Relaxed natural grip on product.\n"
+            "- FORBIDDEN: NO watermarks, NO text overlays, NO AI-generated text or logos on product labels (can show blurred label shape), NO captions, NO stock-photo stiffness, NO selfie arm, NO beauty filter, NO titled frame.\n"
+            "Output ONLY the prompt text. No quotes, no labels, no preamble."
         )
 
     payload = {
@@ -135,17 +155,19 @@ async def generate_ugc_prompt(
             {
                 "role": "system",
                 "content": (
-                    "You write image prompts for photorealistic AI diffusion models. "
-                    "Your prompts create ultra-realistic 9:16 UGC creator photos with locked character consistency. "
-                    "Crucial: Character must be shown WAIST-UP with BOTH HANDS VISIBLE in natural positions. "
-                    "Expressions must be calm and natural, never exaggerated or posed. "
-                    "Output ONLY the prompt text, no quotes, no labels."
+                    "You are an elite product ad photographer and AI diffusion prompt engineer specializing in "
+                    "photorealistic UGC (User Generated Content) creator videos and testimonial photos. "
+                    "Your prompts reliably produce ultra-realistic 9:16 smartphone-camera-style photos with "
+                    "locked character consistency, natural environment depth, and authentic human expressions. "
+                    "Critical rules: WAIST-UP framing with BOTH HANDS VISIBLE. Real room background with DOF. "
+                    "Natural skin, no beauty filter. No exaggerated expressions. No AI-obvious artifacts. "
+                    "Output ONLY the image prompt text, nothing else."
                 ),
             },
             {"role": "user", "content": user_msg},
         ],
-        "temperature": 0.7,
-        "max_tokens": 500,
+        "temperature": 0.6,
+        "max_tokens": 700,
     }
 
     async with httpx.AsyncClient(timeout=60) as client:
