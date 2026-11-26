@@ -39,6 +39,16 @@ cp .env.example .env
 ```
 Edit `.env` and fill in your API keys (`OPENROUTER_API_KEY`, etc.).
 
+## Configuration notes
+- **Required:** `OPENROUTER_API_KEY`. Everything else in `.env.example` is optional or has a default.
+- `VOXCPM_URL` / `LOCAL_GPU_URL` (with their `*_API_KEY`) point at the companion `voxcpm-api` and `wan2gp-api` servers.
+- `SERVER_URL` must be the address under which external services can reach **this** app (they fetch generated
+  audio/images/videos from `/uploads/...`).
+- **There is no authentication on the web app or API, and every ad spends your OpenRouter credits.** Keep it on a
+  private network or behind a firewall / authenticating reverse proxy.
+- `start.sh` runs uvicorn with `--reload` (development). For production use the systemd unit
+  `ugc-ad-maker.service` (edit its paths and user first, then `sudo cp` it to `/etc/systemd/system/`).
+
 ## Running the Application
 
 Start the web server:

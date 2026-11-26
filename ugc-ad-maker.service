@@ -1,6 +1,6 @@
 [Unit]
 Description=UGC Ad Maker - AI Video Ad Generator
-Documentation=https://github.com/your-repo/ugc-ad-maker-python
+Documentation=https://github.com/surajit20072003/ugc-ad-maker-python
 After=network.target network-online.target
 Wants=network-online.target
 

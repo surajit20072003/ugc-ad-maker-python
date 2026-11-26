@@ -26,3 +26,9 @@ all_models_with_modalities.txt
 .idea/
 .vscode/
 public_https_url.txt
+
+# logs, local tool config, machine-specific symlink, scratch
+*.log
+.claude/
+static/uploads
+stitch_clean_ad.py

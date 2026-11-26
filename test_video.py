@@ -13,7 +13,7 @@ headers = {
 
 payload = {
     "prompt": "Person looking directly at camera, speaking naturally",
-    "image": "http://204.12.237.78:8765/uploads/image_imggen.jpg",
+    "image": "http://localhost:8765/uploads/image_imggen.jpg",
     "model": "kwaivgi/kling-video-o1",
     "aspect_ratio": "9:16",
     "duration": 5

@@ -22,7 +22,7 @@ load_dotenv()
 
 # Public base URL of this server (used to build CDN-style URLs)
 # Set SERVER_URL in .env if your server IP/domain is different
-SERVER_URL = os.getenv("SERVER_URL", "http://204.12.237.78:8765").rstrip("/")
+SERVER_URL = os.getenv("SERVER_URL", "http://localhost:8765").rstrip("/")
 
 UPLOAD_DIR = Path(__file__).parent.parent / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)

@@ -3,7 +3,7 @@ pipeline/tts.py
 ────────────────
 VoxCPM TTS integration.
 
-API (from OpenAPI spec at http://204.12.237.78:7861/openapi.json):
+API (from OpenAPI spec at http://localhost:7861/openapi.json):
 
   POST /generate/sync
     body: { text, emotion, reference_audio?, language?, webhook_url? }
@@ -32,8 +32,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-VOXCPM_URL = os.getenv("VOXCPM_URL", "http://204.12.237.78:7861").rstrip("/")
-VOXCPM_API_KEY = os.getenv("VOXCPM_API_KEY", "spassword")
+VOXCPM_URL = os.getenv("VOXCPM_URL", "http://localhost:7861").rstrip("/")
+VOXCPM_API_KEY = os.getenv("VOXCPM_API_KEY", "")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_SPEECH_URL = "https://openrouter.ai/api/v1/audio/speech"
 

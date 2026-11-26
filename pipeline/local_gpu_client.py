@@ -34,7 +34,7 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-LOCAL_GPU_URL = os.environ.get("LOCAL_GPU_URL", "http://204.12.237.78:9090")
+LOCAL_GPU_URL = os.environ.get("LOCAL_GPU_URL", "http://localhost:9090")
 LOCAL_GPU_API_KEY = os.environ.get("LOCAL_GPU_API_KEY", "")
 
 POLL_INTERVAL = 20   # seconds between status polls
